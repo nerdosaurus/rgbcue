@@ -112,6 +112,9 @@ pub fn run(page: &str) -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1120.0, 720.0])
+            .with_app_id("rgbcue")
+            .with_resizable(true)
+            .with_fullscreen(false)
             .with_title("RGBCUE"),
         ..Default::default()
     };
@@ -562,7 +565,7 @@ impl PreviewApp {
         section_header(ui, "System", "Drag the grip to reorder");
         ui.add_space(8.0);
 
-        let mgap = 14.0;
+        let mgap = 20.0;
         let avail = ui.available_width();
         let per_row = if avail > 980.0 {
             5
@@ -586,11 +589,11 @@ impl PreviewApp {
             ui.add_space(mgap);
         }
 
-        ui.add_space(6.0);
+        ui.add_space(12.0);
         section_header(ui, "Devices", "Drag the grip to reorder");
         ui.add_space(8.0);
 
-        let gap = 16.0;
+        let gap = 24.0;
         let cols = 3usize;
         let dw = (avail - gap * (cols - 1) as f32) / cols as f32;
 
@@ -912,6 +915,12 @@ impl PreviewApp {
 
 impl eframe::App for PreviewApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if ui.input(|i| i.key_pressed(egui::Key::F11)) {
+            let full = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
+
         let full = ui.max_rect();
         let sidebar_w = if self.collapsed { 72.0 } else { 260.0 };
         let sidebar = Rect::from_min_size(full.min, Vec2::new(sidebar_w, full.height()));
