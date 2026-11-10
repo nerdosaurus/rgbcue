@@ -6,6 +6,7 @@
 //! device list so the UI never blocks on the network.
 
 mod api;
+mod ui;
 
 use eframe::egui;
 use std::sync::mpsc;
@@ -1188,6 +1189,10 @@ fn main() -> eframe::Result<()> {
     if args.iter().any(|a| a == "--keys") {
         list_keys();
         return Ok(());
+    }
+    if let Some(i) = args.iter().position(|a| a == "--preview") {
+        let page = args.get(i + 1).map(|s| s.as_str()).unwrap_or("dashboard");
+        return ui::run(page);
     }
 
     let options = eframe::NativeOptions {

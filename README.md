@@ -26,6 +26,21 @@ The window is built with `eframe`/`egui` 0.37.
 | `--rgb <serial>` | Apply the configured RGB preset to that device serial, then exit. |
 | `--macros` | List macro profiles, then exit. |
 | `--keys` | List available key/media/mouse input actions, then exit. |
+| `--preview [page]` | Open the ported OpenLinkHub UI shell (mock data, no API). Pages: `dashboard` (default), `device`, `macros`, `settings`. |
+
+## UI preview
+
+The OpenLinkHub web UI is being ported to native egui screens. The shell is
+available before it is wired up:
+
+```
+cargo run --release -- --preview dashboard
+```
+
+It uses mock devices and local widget state, and never contacts OpenLinkHub.
+Implemented screens: dashboard, device (settings + lighting), macros, settings,
+plus placeholder pages for the rest of the sidebar. The old functional UI is
+still the default until the port replaces it.
 
 ## What you can do
 
