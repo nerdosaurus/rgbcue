@@ -39,8 +39,10 @@ cargo run --release -- --preview dashboard
 
 It uses mock devices and local widget state, and never contacts OpenLinkHub.
 Implemented screens: dashboard, device (settings + lighting), macros, settings,
-plus placeholder pages for the rest of the sidebar. The old functional UI is
-still the default until the port replaces it.
+plus placeholder pages for the rest of the sidebar. The dashboard shows
+monitored items (CPU/GPU/coolant/fans/storage) as individual cards, and both the
+monitor and device cards can be reordered by dragging their grip handle. The old
+functional UI is still the default until the port replaces it.
 
 ## What you can do
 

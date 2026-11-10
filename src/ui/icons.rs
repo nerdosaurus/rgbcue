@@ -30,6 +30,7 @@ pub enum Icon {
     Battery,
     Search,
     Menu,
+    Grip,
 }
 
 fn p(r: Rect, x: f32, y: f32) -> Pos2 {
@@ -242,6 +243,20 @@ pub fn icon(painter: &egui::Painter, rect: Rect, kind: Icon, color: Color32) {
                     ],
                     stroke,
                 );
+            }
+        }
+        Icon::Grip => {
+            for row in 0..3 {
+                for col in 0..2 {
+                    painter.circle_filled(
+                        egui::pos2(
+                            r.left() + r.width() * (0.36 + col as f32 * 0.28),
+                            r.top() + r.height() * (0.22 + row as f32 * 0.28),
+                        ),
+                        sw * 0.85,
+                        color,
+                    );
+                }
             }
         }
     }

@@ -82,6 +82,25 @@ enum Page {
     Settings,
 }
 
+struct Monitor {
+    title: &'static str,
+    value: &'static str,
+    detail: &'static str,
+    color: Color32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Group {
+    Monitor,
+    Device,
+}
+
+#[derive(Clone, Copy)]
+struct DragItem {
+    group: Group,
+    pos: usize,
+}
+
 pub fn run(page: &str) -> eframe::Result<()> {
     let page = match page {
         "device" => Page::Device(0),
@@ -130,6 +149,9 @@ struct PreviewApp {
     page: Page,
     collapsed: bool,
     devices: Vec<Device>,
+    monitors: Vec<Monitor>,
+    monitor_order: Vec<usize>,
+    device_order: Vec<usize>,
     color: [u8; 3],
     macro_sel: usize,
     theme_idx: usize,
@@ -149,6 +171,40 @@ impl PreviewApp {
             lang_idx: 0,
             celsius: true,
             autostart: true,
+            monitor_order: (0..5).collect(),
+            device_order: (0..4).collect(),
+            monitors: vec![
+                Monitor {
+                    title: "CPU temperature",
+                    value: "41 °C",
+                    detail: "AMD Ryzen 9 7950X",
+                    color: t::WARN,
+                },
+                Monitor {
+                    title: "GPU temperature",
+                    value: "58 °C",
+                    detail: "NVIDIA GeForce RTX 3090",
+                    color: t::WARN,
+                },
+                Monitor {
+                    title: "Coolant temperature",
+                    value: "32 °C",
+                    detail: "H115i RGB Platinum",
+                    color: t::ACCENT,
+                },
+                Monitor {
+                    title: "Fan speed",
+                    value: "1 240 RPM",
+                    detail: "Commander PRO",
+                    color: t::TEXT,
+                },
+                Monitor {
+                    title: "Storage temperature",
+                    value: "46 °C",
+                    detail: "Samsung 990 PRO 2 TB",
+                    color: t::WARN,
+                },
+            ],
             devices: vec![
                 Device {
                     name: "K65 RGB MINI",
@@ -224,7 +280,11 @@ impl PreviewApp {
 
     fn subtitle(&self) -> String {
         match self.page {
-            Page::Dashboard => format!("{} devices · OpenLinkHub 0.9.5", self.devices.len()),
+            Page::Dashboard => format!(
+                "{} monitors · {} devices · OpenLinkHub 0.9.5",
+                self.monitors.len(),
+                self.devices.len()
+            ),
             Page::Device(i) => format!(
                 "{} · firmware {}",
                 self.devices[i].serial, self.devices[i].firmware
@@ -478,77 +538,78 @@ impl PreviewApp {
     // ---- dashboard ---------------------------------------------------------
 
     fn dashboard(&mut self, ui: &mut Ui) {
-        self.temperature_bar(ui);
-        ui.add_space(16.0);
+        let monitor_order = self.monitor_order.clone();
+        let device_order = self.device_order.clone();
+        let mut pending: Option<(Group, usize, usize)> = None;
+
+        section_header(ui, "System", "Drag the grip to reorder");
+        ui.add_space(8.0);
+
+        let mgap = 14.0;
+        let avail = ui.available_width();
+        let per_row = if avail > 980.0 {
+            5
+        } else if avail > 760.0 {
+            4
+        } else {
+            3
+        };
+        let mw = (avail - mgap * (per_row - 1) as f32) / per_row as f32;
+        for (row, chunk) in monitor_order.chunks(per_row).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = mgap;
+                for (col, &mi) in chunk.iter().enumerate() {
+                    let pos = row * per_row + col;
+                    monitor_card(ui, &self.monitors[mi], mw, pos, &mut pending);
+                }
+                for _ in chunk.len()..per_row {
+                    ui.allocate_space(Vec2::new(mw, 0.0));
+                }
+            });
+            ui.add_space(mgap);
+        }
+
+        ui.add_space(6.0);
+        section_header(ui, "Devices", "Drag the grip to reorder");
+        ui.add_space(8.0);
 
         let gap = 16.0;
         let cols = 3usize;
-        let avail = ui.available_width();
-        let w = (avail - gap * (cols - 1) as f32) / cols as f32;
+        let dw = (avail - gap * (cols - 1) as f32) / cols as f32;
 
         let mut next_page = None;
-        let total = self.devices.len() + 1;
+        let total = device_order.len() + 1;
         let mut i = 0usize;
         while i < total {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for _ in 0..cols {
-                    if i < self.devices.len() {
-                        if device_card(ui, &self.devices[i], w) {
-                            next_page = Some(Page::Device(i));
+                    if i < device_order.len() {
+                        let di = device_order[i];
+                        if device_card(ui, &self.devices[di], dw, i, &mut pending) {
+                            next_page = Some(Page::Device(di));
                         }
-                    } else if i == self.devices.len() {
-                        add_card(ui, w);
+                    } else if i == device_order.len() {
+                        add_card(ui, dw);
                     } else {
-                        ui.allocate_space(Vec2::new(w, 0.0));
+                        ui.allocate_space(Vec2::new(dw, 0.0));
                     }
                     i += 1;
                 }
             });
             ui.add_space(gap);
         }
+
+        if let Some((group, from, to)) = pending {
+            let order = match group {
+                Group::Monitor => &mut self.monitor_order,
+                Group::Device => &mut self.device_order,
+            };
+            reorder(order, from, to);
+        }
         if let Some(page) = next_page {
             self.page = page;
         }
-    }
-
-    fn temperature_bar(&self, ui: &mut Ui) {
-        t::card_padded(14).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let metrics: [(&str, &str, Color32); 4] = [
-                    ("CPU", "41 °C", t::GOOD),
-                    ("GPU", "58 °C", t::WARN),
-                    ("Coolant", "32 °C", t::ACCENT),
-                    ("Fans", "1 240 RPM", t::MUTED),
-                ];
-                for (i, (label, value, color)) in metrics.iter().enumerate() {
-                    if i > 0 {
-                        let (rect, _) =
-                            ui.allocate_exact_size(Vec2::new(1.0, 28.0), Sense::hover());
-                        ui.painter().rect_filled(rect, 0, t::BORDER);
-                        ui.add_space(10.0);
-                    }
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(label.to_uppercase())
-                                .size(9.5)
-                                .color(t::DIM)
-                                .extra_letter_spacing(1.2),
-                        );
-                        ui.label(RichText::new(*value).size(15.0).monospace().color(*color));
-                    });
-                    ui.add_space(10.0);
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("OpenLinkHub 0.9.5")
-                            .size(10.5)
-                            .monospace()
-                            .color(t::DIM),
-                    );
-                });
-            });
-        });
     }
 
     // ---- device ------------------------------------------------------------
@@ -869,7 +930,87 @@ fn menu_button(ui: &mut Ui) -> bool {
     resp.clicked()
 }
 
-fn device_card(ui: &mut Ui, d: &Device, width: f32) -> bool {
+fn section_header(ui: &mut Ui, title: &str, hint: &str) {
+    ui.horizontal(|ui| {
+        t::section_label(ui, title);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(hint).size(10.0).color(t::DIM));
+        });
+    });
+}
+
+fn drag_grip(ui: &mut Ui, group: Group, pos: usize) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::drag());
+    resp.dnd_set_drag_payload(DragItem { group, pos });
+    let color = if resp.hovered() { t::TEXT } else { t::DIM };
+    icons::icon(ui.painter(), rect.shrink(2.0), Icon::Grip, color);
+}
+
+fn drop_target(
+    ui: &mut Ui,
+    resp: &egui::Response,
+    group: Group,
+    pos: usize,
+    pending: &mut Option<(Group, usize, usize)>,
+) {
+    if let Some(payload) = resp.dnd_hover_payload::<DragItem>() {
+        if payload.group == group && payload.pos != pos {
+            ui.painter().rect_stroke(
+                resp.rect,
+                CornerRadius::same(t::RADIUS_CARD),
+                Stroke::new(2.0, t::GOLD),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    if let Some(payload) = resp.dnd_release_payload::<DragItem>() {
+        if payload.group == group {
+            *pending = Some((group, payload.pos, pos));
+        }
+    }
+}
+
+fn reorder(order: &mut Vec<usize>, from: usize, to: usize) {
+    if from == to || from >= order.len() || to >= order.len() {
+        return;
+    }
+    let item = order.remove(from);
+    order.insert(to, item);
+}
+
+fn monitor_card(
+    ui: &mut Ui,
+    m: &Monitor,
+    width: f32,
+    pos: usize,
+    pending: &mut Option<(Group, usize, usize)>,
+) {
+    let resp = t::card_at(ui, Vec2::new(width, 104.0), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(m.title.to_uppercase())
+                    .size(9.0)
+                    .color(t::MUTED)
+                    .extra_letter_spacing(1.0),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                drag_grip(ui, Group::Monitor, pos);
+            });
+        });
+        ui.add_space(6.0);
+        ui.label(RichText::new(m.value).size(24.0).strong().color(m.color));
+        ui.label(RichText::new(m.detail).size(10.0).color(t::DIM));
+    });
+    drop_target(ui, &resp, Group::Monitor, pos, pending);
+}
+
+fn device_card(
+    ui: &mut Ui,
+    d: &Device,
+    width: f32,
+    pos: usize,
+    pending: &mut Option<(Group, usize, usize)>,
+) -> bool {
     let resp = t::card_at(ui, Vec2::new(width, 236.0), |ui| {
         ui.horizontal(|ui| {
             ui.label(
@@ -885,6 +1026,7 @@ fn device_card(ui: &mut Ui, d: &Device, width: f32) -> bool {
                     3.0,
                     if d.connected { t::GOOD } else { t::BAD },
                 );
+                drag_grip(ui, Group::Device, pos);
             });
         });
         ui.add_space(4.0);
@@ -936,6 +1078,7 @@ fn device_card(ui: &mut Ui, d: &Device, width: f32) -> bool {
             });
         });
     });
+    drop_target(ui, &resp, Group::Device, pos, pending);
     resp.clicked()
 }
 
