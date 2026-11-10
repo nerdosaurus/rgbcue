@@ -418,37 +418,38 @@ pub fn select(ui: &mut Ui, options: &[&str], idx: &mut usize) -> bool {
 }
 
 pub fn select_sized(ui: &mut Ui, options: &[&str], idx: &mut usize, width: f32) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
-    let painter = ui.painter();
     let mut changed = false;
-    if resp.clicked() {
-        *idx = (*idx + 1) % options.len().max(1);
-        changed = true;
-    }
-    painter.rect_filled(rect, CornerRadius::same(RADIUS_CTRL), FIELD);
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(RADIUS_CTRL),
-        Stroke::new(1.0, if resp.hovered() { BORDER_MID } else { BORDER }),
-        StrokeKind::Inside,
-    );
-    let label = options.get(*idx).copied().unwrap_or("");
-    painter.text(
-        egui::pos2(rect.left() + 10.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        FontId::proportional(12.0),
-        TEXT,
-    );
-    crate::ui::icons::icon(
-        painter,
-        Rect::from_center_size(
-            egui::pos2(rect.right() - 12.0, rect.center().y),
-            Vec2::splat(12.0),
-        ),
-        crate::ui::icons::Icon::Chevron,
-        MUTED,
-    );
+    let selected = options.get(*idx).copied().unwrap_or("");
+    let id = ui.next_auto_id();
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.weak_bg_fill = FIELD;
+        widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+        widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+        widgets.hovered.weak_bg_fill = mix(FIELD, WHITE, 0.05);
+        widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER_MID);
+        widgets.active.weak_bg_fill = mix(FIELD, WHITE, 0.08);
+        for state in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+        ] {
+            state.corner_radius = CornerRadius::same(RADIUS_CTRL);
+        }
+        ui.spacing_mut().interact_size.y = 28.0;
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(egui::RichText::new(selected).size(12.0).color(TEXT))
+            .width(width)
+            .show_ui(ui, |ui| {
+                ui.visuals_mut().selection.bg_fill =
+                    Color32::from_rgba_unmultiplied(191, 141, 25, 45);
+                for (i, option) in options.iter().enumerate() {
+                    if ui.selectable_value(idx, i, *option).changed() {
+                        changed = true;
+                    }
+                }
+            });
+    });
     changed
 }
 

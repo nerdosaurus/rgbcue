@@ -32,6 +32,7 @@ const LAYOUTS: &[&str] = &["US", "UK", "DE", "Nordic"];
 const POLLING: &[&str] = &["125 Hz", "250 Hz", "500 Hz", "1000 Hz"];
 const THEMES: &[&str] = &["Default", "Midnight", "Nord"];
 const LANGUAGES: &[&str] = &["English", "Deutsch", "Français", "Hrvatski"];
+const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys"];
 const SWATCHES: &[[u8; 3]] = &[
     [255, 255, 255],
     [255, 82, 82],
@@ -103,6 +104,9 @@ struct Device {
     rgb_modes: Vec<String>,
     layouts: Vec<String>,
     polling_rates: Vec<(i64, String)>,
+    keyboard: Option<api::KeyboardLayout>,
+    selected_key: Option<i32>,
+    key_scope: usize,
     stat: (String, String),
 }
 
@@ -150,6 +154,12 @@ enum DeviceAction {
     Layout(String),
     Polling(i64),
     Cluster(bool),
+    KeyColor {
+        key_id: i32,
+        option: i32,
+        color: [u8; 3],
+    },
+    Assignments,
     Add,
     Remove,
 }
@@ -300,6 +310,9 @@ impl PreviewApp {
                     rgb_modes: default_rgb_modes(),
                     layouts: default_layouts(),
                     polling_rates: default_polling_rates(),
+                    keyboard: None,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -320,6 +333,9 @@ impl PreviewApp {
                     rgb_modes: default_rgb_modes(),
                     layouts: default_layouts(),
                     polling_rates: default_polling_rates(),
+                    keyboard: None,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: ("18 000".into(), "DPI".into()),
                 },
                 Device {
@@ -340,6 +356,9 @@ impl PreviewApp {
                     rgb_modes: default_rgb_modes(),
                     layouts: default_layouts(),
                     polling_rates: default_polling_rates(),
+                    keyboard: None,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: ("1 600".into(), "DPI".into()),
                 },
                 Device {
@@ -360,6 +379,9 @@ impl PreviewApp {
                     rgb_modes: default_rgb_modes(),
                     layouts: default_layouts(),
                     polling_rates: default_polling_rates(),
+                    keyboard: None,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: ("1 240".into(), "Fan RPM".into()),
                 },
                 Device {
@@ -380,6 +402,9 @@ impl PreviewApp {
                     rgb_modes: default_rgb_modes(),
                     layouts: default_layouts(),
                     polling_rates: default_polling_rates(),
+                    keyboard: None,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
@@ -395,6 +420,8 @@ impl PreviewApp {
             DeviceAction::Layout(_) => "Layout updated",
             DeviceAction::Polling(_) => "Polling rate updated",
             DeviceAction::Cluster(_) => "RGB cluster updated",
+            DeviceAction::KeyColor { .. } => "Key colour applied",
+            DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
         };
@@ -406,6 +433,15 @@ impl PreviewApp {
                 api::set_polling_rate(&d.serial, d.kind.api_kind(), rate)
             }
             DeviceAction::Cluster(on) => api::set_rgb_cluster(&d.serial, on),
+            DeviceAction::KeyColor {
+                key_id,
+                option,
+                color,
+            } => api::set_keyboard_color(&d.serial, key_id, option, color),
+            DeviceAction::Assignments => {
+                self.notice = Some(("Key assignment editor is not wired yet".into(), false));
+                return;
+            }
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
             DeviceAction::Remove => api::remove_dashboard_device(&d.serial),
         };
@@ -442,6 +478,7 @@ impl PreviewApp {
                 d.connected = s.connected;
                 d.battery = s.battery;
                 d.kind = kind;
+                d.keyboard = s.keyboard;
                 d.stat = (s.stat_value, s.stat_label);
                 next.push(d);
             } else {
@@ -499,6 +536,9 @@ impl PreviewApp {
                     rgb_modes,
                     layouts,
                     polling_rates,
+                    keyboard: s.keyboard,
+                    selected_key: None,
+                    key_scope: 0,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -1057,13 +1097,20 @@ impl PreviewApp {
             ui.add_space(16.0);
 
             ui.vertical(|ui| {
-                let mut rgb_action: Option<String> = None;
-                lighting_card(ui, d, color, &mut brightness, &mut rgb_action);
-                if let Some(name) = rgb_action {
-                    action = Some(DeviceAction::Rgb(name));
+                let has_layout = d.kind == Kind::Keyboard && d.keyboard.is_some();
+                if has_layout {
+                    if let Some(next) = keyboard_editor(ui, d, color) {
+                        action = Some(next);
+                    }
+                } else {
+                    let mut rgb_action: Option<String> = None;
+                    lighting_card(ui, d, color, &mut brightness, &mut rgb_action);
+                    if let Some(name) = rgb_action {
+                        action = Some(DeviceAction::Rgb(name));
+                    }
+                    ui.add_space(16.0);
+                    assignments_card(ui, d);
                 }
-                ui.add_space(16.0);
-                assignments_card(ui, d);
             });
         });
 
@@ -1636,6 +1683,189 @@ fn add_card(ui: &mut Ui, width: f32, names: &[String], choice: &mut usize) -> bo
 }
 
 // ---- device page cards -----------------------------------------------------
+
+fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<DeviceAction> {
+    let mut action = None;
+    t::card_padded(16).show(ui, |ui| {
+        let selected_name = d.selected_key.and_then(|index| {
+            d.keyboard.as_ref().and_then(|layout| {
+                layout
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.keys.iter())
+                    .find(|key| key.index == index)
+                    .map(|key| key.name.clone())
+            })
+        });
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                t::section_label(ui, "Keyboard");
+                ui.label(
+                    RichText::new(
+                        selected_name
+                            .map(|name| format!("Selected: {name}"))
+                            .unwrap_or_else(|| "Click a key to select".into()),
+                    )
+                    .size(15.0)
+                    .strong()
+                    .color(t::WHITE),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                t::pill(ui, "Live", t::GOOD);
+            });
+        });
+
+        ui.add_space(12.0);
+        let Some(layout) = d.keyboard.clone() else {
+            return;
+        };
+        let max_units = layout
+            .rows
+            .iter()
+            .map(|row| row.keys.iter().map(|key| key.width).sum::<f32>())
+            .fold(0.0_f32, f32::max);
+        let avail = ui.available_width();
+        let gap = 3.0;
+        let unit_w = ((avail - gap * 16.0) / max_units.max(1.0)).clamp(10.0, 40.0);
+        let key_h = (unit_w * 0.9).clamp(20.0, 36.0);
+        let mut clicked = None;
+
+        for (ri, row) in layout.rows.iter().enumerate() {
+            let total = row.keys.iter().map(|key| key.width * unit_w).sum::<f32>()
+                + gap * row.keys.len().saturating_sub(1) as f32;
+            let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail, key_h), Sense::hover());
+            let mut x = row_rect.left() + (avail - total) / 2.0;
+
+            for key in &row.keys {
+                let w = key.width * unit_w;
+                let rect = Rect::from_min_size(egui::pos2(x, row_rect.top()), Vec2::new(w, key_h));
+                let id = ui.scope_id().with(("keycap", ri, key.index));
+                let resp = ui.interact(rect, id, Sense::click());
+                let painter = ui.painter();
+                let base = Color32::from_rgb(key.color[0], key.color[1], key.color[2]);
+                let selected = d.selected_key == Some(key.index);
+                let fill = if selected {
+                    t::mix(base, t::WHITE, 0.28)
+                } else if resp.hovered() {
+                    t::mix(base, t::WHITE, 0.12)
+                } else {
+                    base
+                };
+                painter.rect_filled(rect, CornerRadius::same(3), fill);
+                painter.rect_stroke(
+                    rect,
+                    CornerRadius::same(3),
+                    Stroke::new(
+                        if selected { 2.0 } else { 1.0 },
+                        if selected { t::GOLD } else { t::BORDER },
+                    ),
+                    StrokeKind::Inside,
+                );
+
+                let lum = 0.299 * key.color[0] as f32
+                    + 0.587 * key.color[1] as f32
+                    + 0.114 * key.color[2] as f32;
+                let fg = if lum > 150.0 {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                };
+                let label = if key.name == "<---" {
+                    "←"
+                } else {
+                    key.name.as_str()
+                };
+                let font = FontId::proportional((key_h * 0.34).clamp(6.5, 10.5));
+                let label_y = if key.sub.is_empty() {
+                    rect.center().y
+                } else {
+                    rect.center().y - key_h * 0.14
+                };
+                painter.text(
+                    egui::pos2(rect.center().x, label_y),
+                    Align2::CENTER_CENTER,
+                    label,
+                    font,
+                    fg,
+                );
+                if !key.sub.is_empty() {
+                    painter.text(
+                        egui::pos2(rect.center().x, rect.center().y + key_h * 0.24),
+                        Align2::CENTER_CENTER,
+                        &key.sub,
+                        FontId::proportional((key_h * 0.2).clamp(5.5, 7.5)),
+                        fg,
+                    );
+                }
+                if resp.clicked() {
+                    clicked = Some(key.index);
+                }
+                x += w + gap;
+            }
+            ui.add_space(gap);
+        }
+
+        if let Some(index) = clicked {
+            d.selected_key = Some(index);
+        }
+
+        ui.add_space(8.0);
+        t::divider(ui);
+        ui.add_space(8.0);
+
+        let scopes: Vec<String> = KEY_SCOPES.iter().map(|s| s.to_string()).collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            for swatch in SWATCHES {
+                if t::swatch(ui, *swatch, *color == *swatch) {
+                    *color = *swatch;
+                }
+            }
+            ui.add_space(6.0);
+            t::select_strings(ui, &scopes, &mut d.key_scope);
+            let can_apply = d.selected_key.is_some() || d.key_scope == 2;
+            if t::button(
+                ui,
+                "Apply",
+                if can_apply {
+                    t::Btn::Success
+                } else {
+                    t::Btn::Normal
+                },
+            ) && can_apply
+            {
+                action = Some(DeviceAction::KeyColor {
+                    key_id: d.selected_key.unwrap_or(1),
+                    option: d.key_scope as i32,
+                    color: *color,
+                });
+            }
+            if t::button(ui, "Key Assignments", t::Btn::Normal) {
+                action = Some(DeviceAction::Assignments);
+            }
+        });
+        if d.selected_key.is_none() && d.key_scope != 2 {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Select a key, or choose All keys.")
+                    .size(10.0)
+                    .color(t::DIM),
+            );
+        }
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "Per-key colour applies to OpenLinkHub; key assignment editing is not wired yet.",
+            )
+            .size(10.0)
+            .italics()
+            .color(t::DIM),
+        );
+    });
+    action
+}
 
 fn lighting_card(
     ui: &mut Ui,

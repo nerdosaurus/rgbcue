@@ -45,11 +45,15 @@ the preview falls back to demo data and the status pill reads **Offline**.
 
 The **device page settings are live** too: profile switching, brightness,
 RGB profile/effect, keyboard layout, polling rate and RGB cluster are applied
-through the API (colour swatches and effect speed remain preview-only). Devices
-can be added to or removed from the dashboard from the dashboard's add tile or
-the device page. Dashboard cards can be reordered by dragging their grip handle.
+through the API. For keyboards, the device page renders the live key layout
+(`DeviceProfile.Keyboards`) with per-key colours and selection, plus a toolbar
+for applying a colour to the current key, row or whole keyboard
+(`/api/keyboard/color`). All selects are real dropdowns. Colour swatches and
+effect speed remain preview-only, and key-assignment editing is not wired yet.
 
-Macros and settings are still visual previews with mock data.
+Devices can be added to or removed from the dashboard from the dashboard's add
+tile or the device page. Dashboard cards can be reordered by dragging their grip
+handle. Macros and settings are still visual previews with mock data.
 
 ## What you can do
 

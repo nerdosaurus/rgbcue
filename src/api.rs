@@ -197,6 +197,27 @@ pub struct MonitorStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct KeyCap {
+    pub name: String,
+    pub sub: String,
+    pub width: f32,
+    pub color: [u8; 3],
+    pub index: i32,
+    #[allow(dead_code)]
+    pub row: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyRow {
+    pub keys: Vec<KeyCap>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyboardLayout {
+    pub rows: Vec<KeyRow>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DeviceStatus {
     pub product: String,
     pub serial: String,
@@ -218,6 +239,7 @@ pub struct DeviceStatus {
     pub polling_rates: Vec<(i64, String)>,
     pub active_polling: i64,
     pub cluster: bool,
+    pub keyboard: Option<KeyboardLayout>,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
@@ -276,6 +298,8 @@ struct DeviceProfile {
     layout: Option<String>,
     #[serde(default, rename = "RGBCluster")]
     rgb_cluster: Option<bool>,
+    #[serde(default, rename = "Keyboards")]
+    keyboards: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -393,6 +417,74 @@ impl DeviceDetail {
             .as_ref()
             .and_then(|p| p.rgb_cluster)
             .unwrap_or(false)
+    }
+
+    fn keyboard_layout(&self) -> Option<KeyboardLayout> {
+        let p = self.profile.as_ref()?;
+        let keyboards = p.keyboards.as_ref()?.as_object()?;
+        let active = p
+            .profile
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let keyboard = keyboards
+            .get(active)
+            .or_else(|| keyboards.values().next())?;
+        let rows = keyboard.get("row")?.as_object()?;
+
+        let mut ordered: Vec<(i64, &serde_json::Value)> = rows
+            .iter()
+            .filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v)))
+            .collect();
+        ordered.sort_by_key(|(n, _)| *n);
+
+        let mut out = Vec::new();
+        for (ri, row) in ordered {
+            let Some(keys) = row.get("keys").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            let mut caps: Vec<(i64, &serde_json::Value)> = keys
+                .iter()
+                .filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v)))
+                .collect();
+            caps.sort_by_key(|(n, _)| *n);
+
+            let mut row_caps = Vec::new();
+            for (ki, key) in caps {
+                let name = key
+                    .get("keyName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                let width = key.get("width").and_then(|v| v.as_u64()).unwrap_or(70) as f32 / 70.0;
+                let color = key.get("color");
+                let channel = |name: &str| {
+                    color
+                        .and_then(|c| c.get(name))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(255) as u8
+                };
+                row_caps.push(KeyCap {
+                    name: name.to_string(),
+                    sub: key
+                        .get("subKeyName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    width: width.max(1.0),
+                    color: [channel("red"), channel("green"), channel("blue")],
+                    index: ki as i32,
+                    row: ri as i32,
+                });
+            }
+            if !row_caps.is_empty() {
+                out.push(KeyRow { keys: row_caps });
+            }
+        }
+
+        (!out.is_empty()).then_some(KeyboardLayout { rows: out })
     }
 }
 
@@ -601,6 +693,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .and_then(|d| d.profile.as_ref().and_then(|p| p.polling_rate))
             .unwrap_or(polling_rates[0].0);
         let cluster = detail.as_ref().map(DeviceDetail::cluster).unwrap_or(false);
+        let keyboard = detail.as_ref().and_then(DeviceDetail::keyboard_layout);
 
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
@@ -626,6 +719,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             polling_rates,
             active_polling,
             cluster,
+            keyboard,
         });
     }
 
@@ -904,6 +998,25 @@ pub fn remove_dashboard_device(serial: &str) -> Result<(), String> {
         "DELETE",
         &format!("{BASE}/api/dashboard/devices/delete"),
         &serde_json::json!({ "deviceId": serial }),
+    )
+}
+
+/// Apply a colour to a key, row or the whole keyboard.
+pub fn set_keyboard_color(
+    serial: &str,
+    key_id: i32,
+    option: i32,
+    color: [u8; 3],
+) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/color"),
+        &serde_json::json!({
+            "deviceId": serial,
+            "keyId": key_id,
+            "keyOption": option,
+            "color": { "red": color[0], "green": color[1], "blue": color[2] }
+        }),
     )
 }
 
@@ -1306,5 +1419,43 @@ mod profile_tests {
         assert!(detail.cluster());
         assert_eq!(detail.rgb_modes.len(), 2);
         assert_eq!(detail.rgb_profile(), "Breathing");
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn parses_keyboard_layout() {
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "DeviceProfile": {
+                    "Profile": "k65",
+                    "Keyboards": {
+                        "k65": {
+                            "row": {
+                                "0": {"keys": {
+                                    "1": {"keyName": "ESC", "width": 70,
+                                          "color": {"red": 0, "green": 255, "blue": 0}},
+                                    "2": {"keyName": "1", "width": 70,
+                                          "color": {"red": 0, "green": 255, "blue": 255}}
+                                }},
+                                "1": {"keys": {
+                                    "1": {"keyName": "SPACE", "width": 520}
+                                }}
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let layout = detail.keyboard_layout().unwrap();
+        assert_eq!(layout.rows.len(), 2);
+        assert_eq!(layout.rows[0].keys.len(), 2);
+        assert_eq!(layout.rows[0].keys[0].name, "ESC");
+        assert_eq!(layout.rows[0].keys[0].color, [0, 255, 0]);
+        assert!((layout.rows[1].keys[0].width - 520.0 / 70.0).abs() < 0.01);
     }
 }
