@@ -172,7 +172,7 @@ impl PreviewApp {
             celsius: true,
             autostart: true,
             monitor_order: (0..5).collect(),
-            device_order: (0..4).collect(),
+            device_order: (0..5).collect(),
             monitors: vec![
                 Monitor {
                     title: "CPU temperature",
@@ -222,6 +222,23 @@ impl PreviewApp {
                     cluster: false,
                     stat: ("1000 Hz", "Polling rate"),
                     detail: [("Layout", "US"), ("Profile", "Default")],
+                },
+                Device {
+                    name: "Scimitar RGB Elite",
+                    kind: Kind::Mouse,
+                    firmware: "3.12",
+                    serial: "SCIM-01",
+                    connected: true,
+                    battery: None,
+                    profile: 0,
+                    brightness: 75.0,
+                    effect: 0,
+                    speed: 50.0,
+                    polling: 3,
+                    layout: 0,
+                    cluster: false,
+                    stat: ("18 000", "DPI"),
+                    detail: [("Buttons", "17"), ("Profile", "Default")],
                 },
                 Device {
                     name: "Scimitar Elite Wireless SE",
