@@ -135,6 +135,9 @@ pub fn card_at(ui: &mut Ui, size: Vec2, add: impl FnOnce(&mut Ui)) -> Response {
             .layout(egui::Layout::top_down(egui::Align::Min)),
         add,
     );
+    // The content often paints without allocating (custom-painted cards), so
+    // restore the cursor to the card's right edge for the next sibling.
+    ui.advance_cursor_after_rect(rect);
     resp
 }
 

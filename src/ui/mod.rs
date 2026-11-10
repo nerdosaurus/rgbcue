@@ -178,31 +178,31 @@ impl PreviewApp {
             device_order: (0..5).collect(),
             monitors: vec![
                 Monitor {
-                    title: "CPU temperature",
+                    title: "CPU temp",
                     value: "41 °C",
                     detail: "AMD Ryzen 9 7950X",
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "GPU temperature",
+                    title: "GPU temp",
                     value: "58 °C",
                     detail: "NVIDIA GeForce RTX 3090",
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "Coolant temperature",
+                    title: "Coolant",
                     value: "32 °C",
                     detail: "H115i RGB Platinum",
                     color: t::ACCENT,
                 },
                 Monitor {
-                    title: "Fan speed",
+                    title: "Fans",
                     value: "1 240 RPM",
                     detail: "Commander PRO",
                     color: t::TEXT,
                 },
                 Monitor {
-                    title: "Storage temperature",
+                    title: "Storage",
                     value: "46 °C",
                     detail: "Samsung 990 PRO 2 TB",
                     color: t::WARN,
@@ -565,7 +565,7 @@ impl PreviewApp {
         section_header(ui, "System", "Drag the grip to reorder");
         ui.add_space(8.0);
 
-        let mgap = 20.0;
+        let mgap = 30.0;
         let avail = ui.available_width();
         let per_row = if avail > 980.0 {
             5
@@ -589,11 +589,11 @@ impl PreviewApp {
             ui.add_space(mgap);
         }
 
-        ui.add_space(12.0);
+        ui.add_space(16.0);
         section_header(ui, "Devices", "Drag the grip to reorder");
         ui.add_space(8.0);
 
-        let gap = 24.0;
+        let gap = 34.0;
         let cols = 3usize;
         let dw = (avail - gap * (cols - 1) as f32) / cols as f32;
 
@@ -1011,23 +1011,48 @@ fn monitor_card(
     pos: usize,
     pending: &mut Option<(Group, usize, usize)>,
 ) {
-    let resp = t::card_at(ui, Vec2::new(width, 104.0), |ui| {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(m.title.to_uppercase())
-                    .size(9.0)
-                    .color(t::MUTED)
-                    .extra_letter_spacing(1.0),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                drag_grip(ui, Group::Monitor, pos);
-            });
+    let resp = t::card_at(ui, Vec2::new(width, 52.0), |ui| {
+        let r = ui.max_rect();
+
+        let grip_rect = Rect::from_min_size(
+            egui::pos2(r.right() - 16.0, r.center().y - 7.0),
+            Vec2::splat(14.0),
+        );
+        let grip = ui.interact(
+            grip_rect,
+            ui.scope_id().with(("monitor-grip", pos)),
+            Sense::drag(),
+        );
+        grip.dnd_set_drag_payload(DragItem {
+            group: Group::Monitor,
+            pos,
         });
-        ui.add_space(6.0);
-        ui.label(RichText::new(m.value).size(24.0).strong().color(m.color));
-        ui.label(RichText::new(m.detail).size(10.0).color(t::DIM));
+        icons::icon(
+            ui.painter(),
+            grip_rect,
+            Icon::Grip,
+            if grip.hovered() { t::TEXT } else { t::DIM },
+        );
+
+        let value_right = r.right() - 22.0;
+        let clip = Rect::from_min_max(r.min, egui::pos2(value_right - 80.0, r.bottom()));
+        ui.painter().with_clip_rect(clip).text(
+            egui::pos2(r.left(), r.center().y),
+            Align2::LEFT_CENTER,
+            m.title.to_uppercase(),
+            FontId::proportional(8.5),
+            t::MUTED,
+        );
+        ui.painter().text(
+            egui::pos2(value_right, r.center().y),
+            Align2::RIGHT_CENTER,
+            m.value,
+            FontId::proportional(17.0),
+            m.color,
+        );
     });
     drop_target(ui, &resp, Group::Monitor, pos, pending);
+    let _ = resp.on_hover_text(format!("{} · {}", m.title, m.detail));
 }
 
 fn device_card(
@@ -1037,7 +1062,7 @@ fn device_card(
     pos: usize,
     pending: &mut Option<(Group, usize, usize)>,
 ) -> bool {
-    let resp = t::card_at(ui, Vec2::new(width, 236.0), |ui| {
+    let resp = t::card_at(ui, Vec2::new(width, 201.0), |ui| {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(d.name.to_uppercase())
@@ -1055,10 +1080,10 @@ fn device_card(
                 drag_grip(ui, Group::Device, pos);
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
 
         let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), 92.0), Sense::hover());
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 60.0), Sense::hover());
         let brightness = d.brightness / 100.0;
         let color = Color32::from_rgb(80, 180, 255);
         let rainbow = matches!(d.effect, 1 | 7);
@@ -1069,8 +1094,8 @@ fn device_card(
             Kind::Pump => icons::pump(ui.painter(), rect, 32.0, 50.0, t::ACCENT),
         }
 
-        ui.add_space(6.0);
-        ui.label(RichText::new(d.stat.0).size(26.0).strong().color(t::WHITE));
+        ui.add_space(4.0);
+        ui.label(RichText::new(d.stat.0).size(24.0).strong().color(t::WHITE));
         ui.label(
             RichText::new(d.stat.1.to_uppercase())
                 .size(9.0)
@@ -1078,7 +1103,7 @@ fn device_card(
                 .extra_letter_spacing(1.2),
         );
 
-        ui.add_space(8.0);
+        ui.add_space(4.0);
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -1109,7 +1134,7 @@ fn device_card(
 }
 
 fn add_card(ui: &mut Ui, width: f32) {
-    let resp = t::card_at(ui, Vec2::new(width, 236.0), |ui| {
+    let resp = t::card_at(ui, Vec2::new(width, 201.0), |ui| {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
