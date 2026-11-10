@@ -13,7 +13,7 @@ use eframe::egui::{
 };
 use icons::Icon;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use theme as t;
 
 const PROFILES: &[&str] = &["Default", "Profile 1", "Profile 2", "Profile 3"];
@@ -53,6 +53,37 @@ enum Kind {
     Pump,
 }
 
+impl Kind {
+    fn api_kind(self) -> api::DeviceKind {
+        match self {
+            Kind::Keyboard => api::DeviceKind::Keyboard,
+            Kind::Mouse => api::DeviceKind::Mouse,
+            Kind::Commander => api::DeviceKind::Commander,
+            Kind::Pump => api::DeviceKind::Pump,
+        }
+    }
+}
+
+fn default_profiles() -> Vec<String> {
+    PROFILES.iter().map(|s| s.to_string()).collect()
+}
+
+fn default_rgb_modes() -> Vec<String> {
+    EFFECTS.iter().map(|s| s.to_string()).collect()
+}
+
+fn default_layouts() -> Vec<String> {
+    LAYOUTS.iter().map(|s| s.to_string()).collect()
+}
+
+fn default_polling_rates() -> Vec<(i64, String)> {
+    POLLING
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i as i64, s.to_string()))
+        .collect()
+}
+
 #[derive(Clone)]
 struct Device {
     name: String,
@@ -68,6 +99,10 @@ struct Device {
     polling: usize,
     layout: usize,
     cluster: bool,
+    profiles: Vec<String>,
+    rgb_modes: Vec<String>,
+    layouts: Vec<String>,
+    polling_rates: Vec<(i64, String)>,
     stat: (String, String),
 }
 
@@ -107,6 +142,16 @@ struct DragItem {
 enum DashMsg {
     Ok(api::Dashboard),
     Err(String),
+}
+
+enum DeviceAction {
+    Profile(String),
+    Rgb(String),
+    Layout(String),
+    Polling(i64),
+    Cluster(bool),
+    Add,
+    Remove,
 }
 
 pub fn run(page: &str) -> eframe::Result<()> {
@@ -173,6 +218,9 @@ struct PreviewApp {
     refresh_tx: mpsc::Sender<()>,
     live: bool,
     error: Option<String>,
+    add_choice: usize,
+    pending_brightness: Option<(String, u8, Instant)>,
+    notice: Option<(String, bool)>,
 }
 
 impl PreviewApp {
@@ -191,6 +239,9 @@ impl PreviewApp {
             refresh_tx,
             live: false,
             error: None,
+            add_choice: 0,
+            pending_brightness: None,
+            notice: None,
             monitor_order: (0..5).collect(),
             device_order: (0..5).collect(),
             monitors: vec![
@@ -245,6 +296,10 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
+                    profiles: default_profiles(),
+                    rgb_modes: default_rgb_modes(),
+                    layouts: default_layouts(),
+                    polling_rates: default_polling_rates(),
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -261,6 +316,10 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
+                    profiles: default_profiles(),
+                    rgb_modes: default_rgb_modes(),
+                    layouts: default_layouts(),
+                    polling_rates: default_polling_rates(),
                     stat: ("18 000".into(), "DPI".into()),
                 },
                 Device {
@@ -277,6 +336,10 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
+                    profiles: default_profiles(),
+                    rgb_modes: default_rgb_modes(),
+                    layouts: default_layouts(),
+                    polling_rates: default_polling_rates(),
                     stat: ("1 600".into(), "DPI".into()),
                 },
                 Device {
@@ -293,6 +356,10 @@ impl PreviewApp {
                     polling: 0,
                     layout: 0,
                     cluster: false,
+                    profiles: default_profiles(),
+                    rgb_modes: default_rgb_modes(),
+                    layouts: default_layouts(),
+                    polling_rates: default_polling_rates(),
                     stat: ("1 240".into(), "Fan RPM".into()),
                 },
                 Device {
@@ -309,9 +376,45 @@ impl PreviewApp {
                     polling: 0,
                     layout: 0,
                     cluster: false,
+                    profiles: default_profiles(),
+                    rgb_modes: default_rgb_modes(),
+                    layouts: default_layouts(),
+                    polling_rates: default_polling_rates(),
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
+        }
+    }
+
+    fn apply_device_action(&mut self, idx: usize, action: DeviceAction) {
+        let d = &self.devices[idx];
+        let refresh = matches!(action, DeviceAction::Add | DeviceAction::Remove);
+        let message = match &action {
+            DeviceAction::Profile(_) => "Profile updated",
+            DeviceAction::Rgb(_) => "RGB profile applied",
+            DeviceAction::Layout(_) => "Layout updated",
+            DeviceAction::Polling(_) => "Polling rate updated",
+            DeviceAction::Cluster(_) => "RGB cluster updated",
+            DeviceAction::Add => "Added to dashboard",
+            DeviceAction::Remove => "Removed from dashboard",
+        };
+        let result = match action {
+            DeviceAction::Profile(name) => api::change_user_profile(&d.serial, &name),
+            DeviceAction::Rgb(name) => api::set_rgb_profile(&d.serial, 0, &name),
+            DeviceAction::Layout(name) => api::set_keyboard_layout(&d.serial, &name),
+            DeviceAction::Polling(rate) => {
+                api::set_polling_rate(&d.serial, d.kind.api_kind(), rate)
+            }
+            DeviceAction::Cluster(on) => api::set_rgb_cluster(&d.serial, on),
+            DeviceAction::Add => api::add_dashboard_device(&d.serial),
+            DeviceAction::Remove => api::remove_dashboard_device(&d.serial),
+        };
+        self.notice = Some(match result {
+            Ok(()) => (message.into(), true),
+            Err(err) => (err, false),
+        });
+        if refresh {
+            let _ = self.refresh_tx.send(());
         }
     }
 
@@ -342,19 +445,42 @@ impl PreviewApp {
                 d.stat = (s.stat_value, s.stat_label);
                 next.push(d);
             } else {
-                let profile = PROFILES
+                let profiles = if s.profiles.is_empty() {
+                    vec!["Default".to_string()]
+                } else {
+                    s.profiles
+                };
+                let profile = profiles
                     .iter()
-                    .position(|p| *p == s.profile.as_str())
+                    .position(|p| *p == s.active_profile)
                     .unwrap_or(0);
-                let effect = EFFECTS
+                let rgb_modes = if s.rgb_modes.is_empty() {
+                    vec![s.active_rgb.clone()]
+                } else {
+                    s.rgb_modes
+                };
+                let effect = rgb_modes
                     .iter()
-                    .position(|e| *e == s.rgb_profile.as_str())
+                    .position(|e| *e == s.active_rgb)
                     .unwrap_or(0);
-                let polling = s
-                    .polling
-                    .as_deref()
-                    .and_then(|p| POLLING.iter().position(|x| *x == p))
-                    .unwrap_or(3);
+                let layouts = if s.layouts.is_empty() {
+                    vec!["US".to_string()]
+                } else {
+                    s.layouts
+                };
+                let layout = layouts
+                    .iter()
+                    .position(|l| *l == s.active_layout)
+                    .unwrap_or(0);
+                let polling_rates = if s.polling_rates.is_empty() {
+                    default_polling_rates()
+                } else {
+                    s.polling_rates
+                };
+                let polling = polling_rates
+                    .iter()
+                    .position(|(n, _)| *n == s.active_polling)
+                    .unwrap_or(0);
                 next.push(Device {
                     name: s.product,
                     kind,
@@ -367,8 +493,12 @@ impl PreviewApp {
                     effect,
                     speed: 50.0,
                     polling,
-                    layout: 0,
-                    cluster: false,
+                    layout,
+                    cluster: s.cluster,
+                    profiles,
+                    rgb_modes,
+                    layouts,
+                    polling_rates,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -377,15 +507,18 @@ impl PreviewApp {
         let mut order = Vec::new();
         for idx in old_order {
             if let Some(serial) = old_serials.get(idx)
+                && dash.dashboard.iter().any(|s| s == serial)
                 && let Some(pos) = next.iter().position(|d| &d.serial == serial)
                 && !order.contains(&pos)
             {
                 order.push(pos);
             }
         }
-        for i in 0..next.len() {
-            if !order.contains(&i) {
-                order.push(i);
+        for serial in &dash.dashboard {
+            if let Some(pos) = next.iter().position(|d| &d.serial == serial)
+                && !order.contains(&pos)
+            {
+                order.push(pos);
             }
         }
         self.devices = next;
@@ -628,6 +761,14 @@ impl PreviewApp {
                 self.header(ui);
                 ui.add_space(10.0);
                 t::divider(ui);
+                if let Some((message, ok)) = &self.notice {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(message).size(11.5).color(if *ok {
+                        t::GOOD
+                    } else {
+                        t::BAD
+                    }));
+                }
                 ui.add_space(16.0);
 
                 ScrollArea::vertical()
@@ -744,6 +885,21 @@ impl PreviewApp {
         let cols = 3usize;
         let dw = (avail - gap * (cols - 1) as f32) / cols as f32 * 0.85;
 
+        let dashboard_serials: Vec<String> = device_order
+            .iter()
+            .filter_map(|i| self.devices.get(*i))
+            .map(|d| d.serial.clone())
+            .collect();
+        let available: Vec<(String, String)> = self
+            .devices
+            .iter()
+            .filter(|d| !dashboard_serials.contains(&d.serial))
+            .map(|d| (d.serial.clone(), d.name.clone()))
+            .collect();
+        let available_names: Vec<String> = available.iter().map(|(_, n)| n.clone()).collect();
+        let mut add_choice = self.add_choice.min(available.len().saturating_sub(1));
+        let mut add_serial: Option<String> = None;
+
         let mut next_page = None;
         let total = device_order.len() + 1;
         let mut i = 0usize;
@@ -761,7 +917,11 @@ impl PreviewApp {
                             next_page = Some(Page::Device(di));
                         }
                     } else if i == device_order.len() {
-                        add_card(ui, dw);
+                        if add_card(ui, dw, &available_names, &mut add_choice)
+                            && let Some((serial, _)) = available.get(add_choice)
+                        {
+                            add_serial = Some(serial.clone());
+                        }
                     } else {
                         ui.allocate_space(Vec2::new(dw, 0.0));
                     }
@@ -778,6 +938,16 @@ impl PreviewApp {
             };
             reorder(order, from, to);
         }
+        self.add_choice = add_choice;
+        if let Some(serial) = add_serial {
+            match api::add_dashboard_device(&serial) {
+                Ok(()) => {
+                    self.notice = Some(("Added to dashboard".into(), true));
+                    let _ = self.refresh_tx.send(());
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
         if let Some(page) = next_page {
             self.page = page;
         }
@@ -786,8 +956,11 @@ impl PreviewApp {
     // ---- device ------------------------------------------------------------
 
     fn device_page(&mut self, ui: &mut Ui, idx: usize) {
+        let on_dashboard = self.device_order.contains(&idx);
         let color = &mut self.color;
         let d = &mut self.devices[idx];
+        let mut action: Option<DeviceAction> = None;
+        let mut brightness: Option<f32> = None;
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -809,25 +982,74 @@ impl PreviewApp {
 
                         t::stat_row(ui, "Firmware", &d.firmware);
                         t::settings_row(ui, "Profile", |ui| {
-                            t::select(ui, PROFILES, &mut d.profile)
+                            let changed = t::select_strings(ui, &d.profiles, &mut d.profile);
+                            if changed {
+                                action = Some(DeviceAction::Profile(d.profiles[d.profile].clone()));
+                            }
+                            changed
                         });
                         t::settings_row(ui, "Brightness", |ui| {
-                            t::slider(ui, &mut d.brightness, 0.0, 100.0, "%")
+                            let changed = t::slider(ui, &mut d.brightness, 0.0, 100.0, "%");
+                            if changed {
+                                brightness = Some(d.brightness);
+                            }
+                            changed
                         });
                         t::settings_row(ui, "RGB profile", |ui| {
-                            t::select(ui, EFFECTS, &mut d.effect)
+                            let changed = t::select_strings(ui, &d.rgb_modes, &mut d.effect);
+                            if changed {
+                                action = Some(DeviceAction::Rgb(d.rgb_modes[d.effect].clone()));
+                            }
+                            changed
                         });
-                        t::settings_row(ui, "Layout", |ui| t::select(ui, LAYOUTS, &mut d.layout));
-                        t::settings_row(ui, "Polling rate", |ui| {
-                            t::select(ui, POLLING, &mut d.polling)
+                        if d.kind == Kind::Keyboard {
+                            t::settings_row(ui, "Layout", |ui| {
+                                let changed = t::select_strings(ui, &d.layouts, &mut d.layout);
+                                if changed {
+                                    action =
+                                        Some(DeviceAction::Layout(d.layouts[d.layout].clone()));
+                                }
+                                changed
+                            });
+                        }
+                        if matches!(d.kind, Kind::Keyboard | Kind::Mouse) {
+                            let polling_names: Vec<String> =
+                                d.polling_rates.iter().map(|(_, n)| n.clone()).collect();
+                            t::settings_row(ui, "Polling rate", |ui| {
+                                let changed = t::select_strings(ui, &polling_names, &mut d.polling);
+                                if changed {
+                                    action =
+                                        Some(DeviceAction::Polling(d.polling_rates[d.polling].0));
+                                }
+                                changed
+                            });
+                        }
+                        if d.kind == Kind::Keyboard {
+                            t::settings_row(ui, "Performance", |ui| {
+                                t::button(ui, "Configure", t::Btn::Normal)
+                            });
+                        }
+                        t::settings_row(ui, "RGB Cluster", |ui| {
+                            let changed = t::switch(ui, &mut d.cluster);
+                            if changed {
+                                action = Some(DeviceAction::Cluster(d.cluster));
+                            }
+                            changed
                         });
-                        t::settings_row(ui, "Performance", |ui| {
-                            t::button(ui, "Configure", t::Btn::Normal)
-                        });
-                        t::settings_row(ui, "RGB Cluster", |ui| t::switch(ui, &mut d.cluster));
 
                         ui.add_space(14.0);
-                        let _ = t::button(ui, "Remove from dashboard", t::Btn::Danger);
+                        let (label, kind) = if on_dashboard {
+                            ("Remove from dashboard", t::Btn::Danger)
+                        } else {
+                            ("Add to dashboard", t::Btn::Normal)
+                        };
+                        if t::button(ui, label, kind) {
+                            action = Some(if on_dashboard {
+                                DeviceAction::Remove
+                            } else {
+                                DeviceAction::Add
+                            });
+                        }
                     });
                 },
             );
@@ -835,11 +1057,27 @@ impl PreviewApp {
             ui.add_space(16.0);
 
             ui.vertical(|ui| {
-                lighting_card(ui, d, color);
+                let mut rgb_action: Option<String> = None;
+                lighting_card(ui, d, color, &mut brightness, &mut rgb_action);
+                if let Some(name) = rgb_action {
+                    action = Some(DeviceAction::Rgb(name));
+                }
                 ui.add_space(16.0);
                 assignments_card(ui, d);
             });
         });
+
+        if let Some(value) = brightness {
+            let serial = self.devices[idx].serial.clone();
+            self.pending_brightness = Some((
+                serial,
+                value.round().clamp(0.0, 100.0) as u8,
+                Instant::now(),
+            ));
+        }
+        if let Some(action) = action {
+            self.apply_device_action(idx, action);
+        }
     }
 
     // ---- macros ------------------------------------------------------------
@@ -1086,6 +1324,17 @@ impl eframe::App for PreviewApp {
                 }
                 DashMsg::Err(err) => self.error = Some(err),
             }
+        }
+        if let Some((serial, value, at)) = &self.pending_brightness
+            && at.elapsed() >= Duration::from_millis(250)
+        {
+            let serial = serial.clone();
+            let value = *value;
+            self.pending_brightness = None;
+            self.notice = Some(match api::set_brightness(&serial, value) {
+                Ok(()) => ("Brightness updated".into(), true),
+                Err(err) => (err, false),
+            });
         }
         ui.ctx().request_repaint_after(Duration::from_millis(750));
 
@@ -1342,8 +1591,9 @@ fn device_card(
     resp.clicked()
 }
 
-fn add_card(ui: &mut Ui, width: f32) {
-    let resp = t::card_at(ui, Vec2::new(width, 236.0), |ui| {
+fn add_card(ui: &mut Ui, width: f32, names: &[String], choice: &mut usize) -> bool {
+    let mut save = false;
+    t::card_at(ui, Vec2::new(width, 236.0), |ui| {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
@@ -1366,35 +1616,52 @@ fn add_card(ui: &mut Ui, width: f32) {
                     .size(12.5)
                     .color(t::TEXT),
             );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Pick a connected device")
-                    .size(11.0)
-                    .color(t::MUTED),
-            );
-            ui.add_space(14.0);
-            let _ = t::button(ui, "Select device", t::Btn::Normal);
+            ui.add_space(8.0);
+            if names.is_empty() {
+                ui.label(
+                    RichText::new("All devices are on the dashboard")
+                        .size(11.0)
+                        .color(t::MUTED),
+                );
+            } else {
+                let _ = t::select_strings_sized(ui, names, choice, 200.0);
+                ui.add_space(8.0);
+                if t::button(ui, "Save", t::Btn::Normal) {
+                    save = true;
+                }
+            }
         });
     });
-    let _ = resp;
+    save
 }
 
 // ---- device page cards -----------------------------------------------------
 
-fn lighting_card(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) {
+fn lighting_card(
+    ui: &mut Ui,
+    d: &mut Device,
+    color: &mut [u8; 3],
+    brightness_out: &mut Option<f32>,
+    rgb_out: &mut Option<String>,
+) {
     t::card_padded(16).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 t::section_label(ui, "Lighting");
                 ui.label(
-                    RichText::new(EFFECTS[d.effect])
+                    RichText::new(
+                        d.rgb_modes
+                            .get(d.effect)
+                            .map(String::as_str)
+                            .unwrap_or("Static"),
+                    )
                         .size(17.0)
                         .strong()
                         .color(t::WHITE),
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                t::pill(ui, "Local preview", t::GOLD);
+                t::pill(ui, "Live", t::GOOD);
             });
         });
 
@@ -1403,9 +1670,11 @@ fn lighting_card(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            for (i, effect) in EFFECTS.iter().enumerate() {
+            let modes = d.rgb_modes.clone();
+            for (i, effect) in modes.iter().enumerate() {
                 if t::chip(ui, effect, d.effect == i) {
                     d.effect = i;
+                    *rgb_out = Some(effect.clone());
                 }
             }
         });
@@ -1431,7 +1700,9 @@ fn lighting_card(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) {
                 ui.vertical(|ui| {
                     ui.set_width(220.0);
                     t::section_label(ui, "Brightness");
-                    t::slider(ui, &mut d.brightness, 0.0, 100.0, "%");
+                    if t::slider(ui, &mut d.brightness, 0.0, 100.0, "%") {
+                        *brightness_out = Some(d.brightness);
+                    }
                     t::section_label(ui, "Speed");
                     t::slider(ui, &mut d.speed, 0.0, 100.0, "%");
                 });
@@ -1453,7 +1724,7 @@ fn lighting_card(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) {
 
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Preview only — these controls are not wired to OpenLinkHub yet.")
+            RichText::new("Effect, brightness, layout and polling apply to OpenLinkHub; colour and speed are preview-only.")
                 .size(10.5)
                 .italics()
                 .color(t::DIM),

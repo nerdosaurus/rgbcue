@@ -206,18 +206,25 @@ pub struct DeviceStatus {
     pub kind: DeviceKind,
     pub stat_value: String,
     pub stat_label: String,
-    pub profile: String,
     pub brightness: u8,
-    pub rgb_profile: String,
-    pub polling: Option<String>,
     #[allow(dead_code)]
     pub dpi: Option<u16>,
+    pub profiles: Vec<String>,
+    pub active_profile: String,
+    pub rgb_modes: Vec<String>,
+    pub active_rgb: String,
+    pub layouts: Vec<String>,
+    pub active_layout: String,
+    pub polling_rates: Vec<(i64, String)>,
+    pub active_polling: i64,
+    pub cluster: bool,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
 #[derive(Debug, Clone, Default)]
 pub struct Dashboard {
     pub devices: Vec<DeviceStatus>,
+    pub dashboard: Vec<String>,
     pub monitors: Vec<MonitorStatus>,
 }
 
@@ -231,10 +238,22 @@ struct DeviceDetail {
     polling_rates: HashMap<String, String>,
     #[serde(default)]
     devices: Option<serde_json::Value>,
+    #[serde(default, rename = "UserProfiles")]
+    user_profiles: HashMap<String, UserProfile>,
+    #[serde(default, rename = "RGBModes")]
+    rgb_modes: Vec<String>,
+    #[serde(default, rename = "Layouts")]
+    layouts: Vec<String>,
     #[serde(default, rename = "Connected")]
     connected_cap: Option<bool>,
     #[serde(default)]
     connected: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct UserProfile {
+    #[serde(default, rename = "Active")]
+    active: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -253,6 +272,10 @@ struct DeviceProfile {
     dpi_profiles: Option<serde_json::Value>,
     #[serde(default, rename = "Label")]
     label: Option<String>,
+    #[serde(default, rename = "Layout")]
+    layout: Option<String>,
+    #[serde(default, rename = "RGBCluster")]
+    rgb_cluster: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -343,6 +366,34 @@ impl DeviceDetail {
             .and_then(|p| p.rgb_profile.clone())
             .unwrap_or_else(|| "Static".into())
     }
+
+    fn profiles(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.user_profiles.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    fn active_profile(&self) -> Option<String> {
+        if let Some((name, _)) = self.user_profiles.iter().find(|(_, p)| p.active) {
+            return Some(name.clone());
+        }
+        self.profile
+            .as_ref()
+            .and_then(|p| p.profile.as_ref())
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    fn layout(&self) -> Option<String> {
+        self.profile.as_ref().and_then(|p| p.layout.clone())
+    }
+
+    fn cluster(&self) -> bool {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.rgb_cluster)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,6 +451,20 @@ fn fetch_temperature(path: &str) -> Option<String> {
     let parsed: StringData = serde_json::from_str(&body).ok()?;
     let value = parsed.data.trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DashboardDevices {
+    #[serde(default)]
+    devices: Vec<String>,
+}
+
+fn fetch_dashboard_devices() -> Vec<String> {
+    get(&format!("{BASE}/api/dashboard/devices/get"))
+        .ok()
+        .and_then(|body| serde_json::from_str::<DashboardDevices>(&body).ok())
+        .map(|env| env.devices)
+        .unwrap_or_default()
 }
 
 fn fetch_batteries() -> HashMap<String, BatteryStat> {
@@ -484,6 +549,59 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             DeviceKind::Other => ("Connected".into(), "Status".into()),
         };
 
+        let profiles = {
+            let names = detail
+                .as_ref()
+                .map(DeviceDetail::profiles)
+                .unwrap_or_default();
+            if names.is_empty() {
+                vec!["Default".to_string()]
+            } else {
+                names
+            }
+        };
+        let active_profile = detail
+            .as_ref()
+            .and_then(DeviceDetail::active_profile)
+            .unwrap_or_else(|| profiles[0].clone());
+        let mut rgb_modes = detail
+            .as_ref()
+            .map(|d| d.rgb_modes.clone())
+            .unwrap_or_default();
+        if rgb_modes.is_empty() {
+            rgb_modes.push(rgb_profile.clone());
+        }
+        let mut layouts = detail
+            .as_ref()
+            .map(|d| d.layouts.clone())
+            .unwrap_or_default();
+        let active_layout = detail
+            .as_ref()
+            .and_then(DeviceDetail::layout)
+            .or_else(|| layouts.first().cloned())
+            .unwrap_or_default();
+        if layouts.is_empty() {
+            layouts.push(active_layout.clone());
+        }
+        let mut polling_rates: Vec<(i64, String)> = detail
+            .as_ref()
+            .map(|d| {
+                d.polling_rates
+                    .iter()
+                    .filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        polling_rates.sort_by_key(|(n, _)| *n);
+        if polling_rates.is_empty() {
+            polling_rates.push((0, "Default".into()));
+        }
+        let active_polling = detail
+            .as_ref()
+            .and_then(|d| d.profile.as_ref().and_then(|p| p.polling_rate))
+            .unwrap_or(polling_rates[0].0);
+        let cluster = detail.as_ref().map(DeviceDetail::cluster).unwrap_or(false);
+
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
             serial: dev.serial.clone(),
@@ -497,13 +615,21 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             kind,
             stat_value,
             stat_label,
-            profile,
             brightness,
-            rgb_profile,
-            polling,
             dpi,
+            profiles,
+            active_profile,
+            rgb_modes,
+            active_rgb: rgb_profile.clone(),
+            layouts,
+            active_layout,
+            polling_rates,
+            active_polling,
+            cluster,
         });
     }
+
+    let dashboard = fetch_dashboard_devices();
 
     let mut monitors = Vec::new();
     if let Some(value) = fetch_temperature("/api/cpuTemp") {
@@ -552,6 +678,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
 
     Ok(Dashboard {
         devices: statuses,
+        dashboard,
         monitors,
     })
 }
@@ -701,6 +828,83 @@ pub fn set_solid_color(serial: &str, r: u8, g: u8, b: u8) -> Result<(), String> 
 pub fn activate_profile(serial: &str, profile: &str) -> Result<(), String> {
     let payload = serde_json::json!({ "deviceId": serial, "profile": profile });
     send_json("POST", &format!("{BASE}/api/color"), &payload)
+}
+
+/// Switch the active user profile.
+pub fn change_user_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/userProfile/change"),
+        &serde_json::json!({ "deviceId": serial, "userProfileName": name }),
+    )
+}
+
+/// Set device brightness (gradual transition).
+pub fn set_brightness(serial: &str, brightness: u8) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/brightness/gradual"),
+        &serde_json::json!({ "deviceId": serial, "brightness": brightness }),
+    )
+}
+
+/// Apply an RGB profile on a channel (0 = primary channel).
+pub fn set_rgb_profile(serial: &str, channel: u8, profile: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/color"),
+        &serde_json::json!({ "deviceId": serial, "channelId": channel, "profile": profile }),
+    )
+}
+
+/// Change the keyboard layout.
+pub fn set_keyboard_layout(serial: &str, layout: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/layout"),
+        &serde_json::json!({ "deviceId": serial, "keyboardLayout": layout }),
+    )
+}
+
+/// Change the polling rate on the right endpoint for the device kind.
+pub fn set_polling_rate(serial: &str, kind: DeviceKind, rate: i64) -> Result<(), String> {
+    let path = match kind {
+        DeviceKind::Keyboard => "keyboard",
+        DeviceKind::Mouse => "mouse",
+        _ => return Err("Polling rate is not supported for this device".into()),
+    };
+    send_json(
+        "POST",
+        &format!("{BASE}/api/{path}/pollingRate"),
+        &serde_json::json!({ "deviceId": serial, "pollingRate": rate }),
+    )
+}
+
+/// Enable or disable RGB cluster sync for a device.
+pub fn set_rgb_cluster(serial: &str, on: bool) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/color/setCluster"),
+        &serde_json::json!({ "deviceId": serial, "mode": if on { 1 } else { 0 } }),
+    )
+}
+
+/// Add a device to the dashboard.
+pub fn add_dashboard_device(serial: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/dashboard/devices/add"),
+        &serde_json::json!({ "deviceId": serial }),
+    )
+}
+
+/// Remove a device from the dashboard.
+pub fn remove_dashboard_device(serial: &str) -> Result<(), String> {
+    send_json(
+        "DELETE",
+        &format!("{BASE}/api/dashboard/devices/delete"),
+        &serde_json::json!({ "deviceId": serial }),
+    )
 }
 
 /// Send a JSON body with the given method and check the `status` field (1 = ok).
@@ -1071,5 +1275,36 @@ mod storage_tests {
         assert_eq!(env.data.len(), 2);
         assert_eq!(env.data[0].model, "INTEL SSDPEKNW020T8");
         assert_eq!(env.data[1].temperature_string, "44.0 °C");
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn parses_profiles_layouts_and_cluster() {
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "UserProfiles": {
+                    "Default": {"Active": true},
+                    "FPS": {"Active": false}
+                },
+                "RGBModes": ["Static", "Breathing"],
+                "Layouts": ["US", "UK"],
+                "DeviceProfile": {
+                    "Layout": "UK",
+                    "RGBCluster": true,
+                    "RGBProfile": "Breathing"
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(detail.profiles(), vec!["Default", "FPS"]);
+        assert_eq!(detail.active_profile().as_deref(), Some("Default"));
+        assert_eq!(detail.layout().as_deref(), Some("UK"));
+        assert!(detail.cluster());
+        assert_eq!(detail.rgb_modes.len(), 2);
+        assert_eq!(detail.rgb_profile(), "Breathing");
     }
 }

@@ -414,7 +414,11 @@ pub fn slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, suffix: &str) ->
 }
 
 pub fn select(ui: &mut Ui, options: &[&str], idx: &mut usize) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(132.0, 28.0), Sense::click());
+    select_sized(ui, options, idx, 132.0)
+}
+
+pub fn select_sized(ui: &mut Ui, options: &[&str], idx: &mut usize, width: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
     let painter = ui.painter();
     let mut changed = false;
     if resp.clicked() {
@@ -446,6 +450,16 @@ pub fn select(ui: &mut Ui, options: &[&str], idx: &mut usize) -> bool {
         MUTED,
     );
     changed
+}
+
+pub fn select_strings(ui: &mut Ui, options: &[String], idx: &mut usize) -> bool {
+    let refs: Vec<&str> = options.iter().map(String::as_str).collect();
+    select(ui, &refs, idx)
+}
+
+pub fn select_strings_sized(ui: &mut Ui, options: &[String], idx: &mut usize, width: f32) -> bool {
+    let refs: Vec<&str> = options.iter().map(String::as_str).collect();
+    select_sized(ui, &refs, idx, width)
 }
 
 pub fn swatch(ui: &mut Ui, rgb: [u8; 3], selected: bool) -> bool {

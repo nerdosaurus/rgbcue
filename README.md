@@ -43,8 +43,13 @@ cards from `/api/cpuTemp`, `/api/gpuTemp` and `/api/storageTemp` (one card per
 disk); coolant and fan speed stay on their device cards. If OpenLinkHub is unreachable
 the preview falls back to demo data and the status pill reads **Offline**.
 
-The device, macros and settings screens are still visual previews with mock
-data. Dashboard cards can be reordered by dragging their grip handle.
+The **device page settings are live** too: profile switching, brightness,
+RGB profile/effect, keyboard layout, polling rate and RGB cluster are applied
+through the API (colour swatches and effect speed remain preview-only). Devices
+can be added to or removed from the dashboard from the dashboard's add tile or
+the device page. Dashboard cards can be reordered by dragging their grip handle.
+
+Macros and settings are still visual previews with mock data.
 
 ## What you can do
 
