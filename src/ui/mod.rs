@@ -85,6 +85,7 @@ enum Page {
 }
 
 struct Monitor {
+    id: String,
     title: String,
     value: String,
     detail: String,
@@ -194,31 +195,36 @@ impl PreviewApp {
             device_order: (0..5).collect(),
             monitors: vec![
                 Monitor {
-                    title: "CPU temp".into(),
+                    id: "cpu".into(),
+                    title: "CPU temperature".into(),
                     value: "41 °C".into(),
                     detail: "Ryzen 9 7950X".into(),
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "GPU temp".into(),
+                    id: "gpu".into(),
+                    title: "GPU temperature".into(),
                     value: "58 °C".into(),
                     detail: "RTX 3090".into(),
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "Coolant".into(),
+                    id: "coolant".into(),
+                    title: "Coolant temperature".into(),
                     value: "32 °C".into(),
                     detail: "H115i Platinum".into(),
                     color: t::ACCENT,
                 },
                 Monitor {
-                    title: "Fans".into(),
+                    id: "fans".into(),
+                    title: "Fan speed".into(),
                     value: "1 240 RPM".into(),
                     detail: "Commander PRO".into(),
                     color: t::TEXT,
                 },
                 Monitor {
-                    title: "Storage".into(),
+                    id: "storage".into(),
+                    title: "Storage temperature".into(),
                     value: "46 °C".into(),
                     detail: "990 PRO 2 TB".into(),
                     color: t::WARN,
@@ -385,12 +391,13 @@ impl PreviewApp {
         self.devices = next;
         self.device_order = order;
 
-        let old_titles: Vec<String> = self.monitors.iter().map(|m| m.title.clone()).collect();
+        let old_ids: Vec<String> = self.monitors.iter().map(|m| m.id.clone()).collect();
         let old_monitor_order = std::mem::take(&mut self.monitor_order);
         self.monitors = dash
             .monitors
             .into_iter()
             .map(|m| Monitor {
+                id: m.id,
                 title: m.title,
                 value: m.value,
                 detail: m.detail,
@@ -404,8 +411,8 @@ impl PreviewApp {
 
         let mut morder = Vec::new();
         for idx in old_monitor_order {
-            if let Some(title) = old_titles.get(idx)
-                && let Some(pos) = self.monitors.iter().position(|m| &m.title == title)
+            if let Some(id) = old_ids.get(idx)
+                && let Some(pos) = self.monitors.iter().position(|m| &m.id == id)
                 && !morder.contains(&pos)
             {
                 morder.push(pos);
@@ -711,14 +718,8 @@ impl PreviewApp {
 
         let mgap = 25.0;
         let avail = ui.available_width();
-        let per_row = if avail > 980.0 {
-            5
-        } else if avail > 760.0 {
-            4
-        } else {
-            3
-        };
-        let mw = (avail - mgap * (per_row - 1) as f32) / per_row as f32 * 0.5;
+        let mw = 260.0;
+        let per_row = (((avail + mgap) / (mw + mgap)).floor() as usize).max(1);
         for (row, chunk) in monitor_order.chunks(per_row).enumerate() {
             if row > 0 {
                 ui.add_space(mgap);
@@ -1192,6 +1193,16 @@ fn reorder(order: &mut Vec<usize>, from: usize, to: usize) {
     order.insert(to, item);
 }
 
+fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 fn monitor_card(
     ui: &mut Ui,
     m: &Monitor,
@@ -1199,11 +1210,11 @@ fn monitor_card(
     pos: usize,
     pending: &mut Option<(Group, usize, usize)>,
 ) {
-    let resp = t::card_at(ui, Vec2::new(width, 104.0), |ui| {
+    let resp = t::card_at(ui, Vec2::new(width, 112.0), |ui| {
         let r = ui.max_rect();
 
         let grip_rect = Rect::from_min_size(
-            egui::pos2(r.right() - 14.0, r.top() + 1.0),
+            egui::pos2(r.right() - 16.0, r.top() + 2.0),
             Vec2::splat(14.0),
         );
         let grip = ui.interact(
@@ -1222,28 +1233,26 @@ fn monitor_card(
             if grip.hovered() { t::TEXT } else { t::DIM },
         );
 
-        let clip = Rect::from_min_max(r.min, egui::pos2(r.right() - 18.0, r.top() + 14.0));
-        ui.painter().with_clip_rect(clip).text(
+        ui.painter().text(
             egui::pos2(r.left(), r.top() + 2.0),
             Align2::LEFT_TOP,
             m.title.to_uppercase(),
-            FontId::proportional(8.5),
+            FontId::proportional(11.0),
             t::MUTED,
         );
         ui.painter().text(
-            egui::pos2(r.left(), r.top() + 26.0),
+            egui::pos2(r.left(), r.top() + 24.0),
             Align2::LEFT_TOP,
             &m.value,
-            FontId::proportional(17.0),
+            FontId::proportional(28.0),
             m.color,
         );
-        let detail_clip = Rect::from_min_max(r.min, egui::pos2(r.right(), r.bottom()));
-        ui.painter().with_clip_rect(detail_clip).text(
-            egui::pos2(r.left(), r.top() + 54.0),
+        ui.painter().text(
+            egui::pos2(r.left(), r.top() + 64.0),
             Align2::LEFT_TOP,
-            &m.detail,
-            FontId::proportional(9.0),
-            t::DIM,
+            ellipsize(&m.detail, 38),
+            FontId::proportional(12.0),
+            t::MUTED,
         );
     });
     drop_target(ui, &resp, Group::Monitor, pos, pending);

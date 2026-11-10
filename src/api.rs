@@ -180,6 +180,7 @@ fn get(url: &str) -> Result<String, String> {
 // -- dashboard --------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum MonitorTone {
     Warn,
     Good,
@@ -188,6 +189,7 @@ pub enum MonitorTone {
 
 #[derive(Debug, Clone)]
 pub struct MonitorStatus {
+    pub id: String,
     pub title: String,
     pub value: String,
     pub detail: String,
@@ -221,6 +223,8 @@ pub struct Dashboard {
 
 #[derive(Debug, Deserialize, Default)]
 struct DeviceDetail {
+    #[serde(default)]
+    firmware: String,
     #[serde(default, rename = "DeviceProfile")]
     profile: Option<DeviceProfile>,
     #[serde(default, rename = "PollingRates")]
@@ -259,12 +263,8 @@ struct Channel {
     rpm: Option<f64>,
     #[serde(default)]
     temperature: Option<f64>,
-    #[serde(default, rename = "temperatureString")]
-    temperature_string: Option<String>,
     #[serde(default, rename = "HasSpeed")]
     has_speed: bool,
-    #[serde(default, rename = "HasTemps")]
-    has_temps: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -369,6 +369,32 @@ fn fetch_device_detail(serial: &str) -> Result<DeviceDetail, String> {
     env.device.ok_or_else(|| "no device payload".to_string())
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct StorageTemp {
+    #[serde(default, rename = "Key")]
+    key: String,
+    #[serde(default, rename = "Model")]
+    model: String,
+    #[serde(default, rename = "Temperature")]
+    temperature: f64,
+    #[serde(default, rename = "TemperatureString")]
+    temperature_string: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct StorageEnvelope {
+    #[serde(default)]
+    data: Vec<StorageTemp>,
+}
+
+fn fetch_storage_temps() -> Vec<StorageTemp> {
+    get(&format!("{BASE}/api/storageTemp"))
+        .ok()
+        .and_then(|body| serde_json::from_str::<StorageEnvelope>(&body).ok())
+        .map(|env| env.data)
+        .unwrap_or_default()
+}
+
 fn fetch_temperature(path: &str) -> Option<String> {
     let body = get(&format!("{BASE}{path}")).ok()?;
     let parsed: StringData = serde_json::from_str(&body).ok()?;
@@ -390,8 +416,6 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
     let batteries = fetch_batteries();
 
     let mut statuses = Vec::with_capacity(devices.len());
-    let mut coolant: Option<(f64, String, String)> = None;
-    let mut fan_totals: HashMap<String, u64> = HashMap::new();
 
     for dev in &devices {
         let detail = fetch_device_detail(&dev.serial).ok();
@@ -407,33 +431,11 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .or_else(|| battery.and_then(|b| b.connected))
             .unwrap_or(true);
 
-        if matches!(kind, DeviceKind::Pump) {
-            for ch in &channels {
-                if (ch.has_temps || ch.temperature.unwrap_or(0.0) > 0.0)
-                    && let Some(t) = ch.temperature
-                    && t > 0.0
-                    && coolant.as_ref().map_or(true, |(max, _, _)| t > *max)
-                {
-                    coolant = Some((
-                        t,
-                        dev.product.clone(),
-                        ch.temperature_string
-                            .clone()
-                            .unwrap_or_else(|| format!("{t:.1} °C")),
-                    ));
-                }
-            }
-        }
-
         let total: u64 = channels
             .iter()
             .filter(|c| c.has_speed || c.rpm.unwrap_or(0.0) > 0.0)
             .map(|c| c.rpm.unwrap_or(0.0).max(0.0) as u64)
             .sum();
-        if total > 0 {
-            *fan_totals.entry(dev.product.clone()).or_insert(0) += total;
-        }
-
         let polling = detail.as_ref().and_then(DeviceDetail::polling);
         let dpi = detail.as_ref().and_then(DeviceDetail::dpi);
         let profile = detail
@@ -485,7 +487,11 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
             serial: dev.serial.clone(),
-            firmware: dev.firmware.clone(),
+            firmware: detail
+                .as_ref()
+                .map(|d| d.firmware.clone())
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| dev.firmware.clone()),
             connected,
             battery: battery.map(|b| b.level.min(100) as u8),
             kind,
@@ -502,7 +508,8 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
     let mut monitors = Vec::new();
     if let Some(value) = fetch_temperature("/api/cpuTemp") {
         monitors.push(MonitorStatus {
-            title: "CPU temp".into(),
+            id: "cpu".into(),
+            title: "CPU temperature".into(),
             value,
             detail: cpu_model().unwrap_or_else(|| "Processor".into()),
             tone: MonitorTone::Warn,
@@ -510,34 +517,36 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
     }
     if let Some(value) = fetch_temperature("/api/gpuTemp") {
         monitors.push(MonitorStatus {
-            title: "GPU temp".into(),
+            id: "gpu".into(),
+            title: "GPU temperature".into(),
             value,
-            detail: "Graphics".into(),
+            detail: gpu_model().unwrap_or_else(|| "Graphics".into()),
             tone: MonitorTone::Warn,
         });
     }
-    if let Some(value) = fetch_temperature("/api/storageTemp") {
+    for storage in fetch_storage_temps() {
+        let value = if !storage.temperature_string.trim().is_empty() {
+            storage.temperature_string
+        } else if storage.temperature > 0.0 {
+            format!("{:.1} °C", storage.temperature)
+        } else {
+            continue;
+        };
+        let id = if storage.key.is_empty() {
+            format!("storage:{}", storage.model)
+        } else {
+            format!("storage:{}", storage.key)
+        };
         monitors.push(MonitorStatus {
-            title: "Storage".into(),
+            id,
+            title: "Storage temperature".into(),
             value,
-            detail: storage_model().unwrap_or_else(|| "Storage".into()),
+            detail: if storage.model.is_empty() {
+                "Storage".into()
+            } else {
+                storage.model
+            },
             tone: MonitorTone::Warn,
-        });
-    }
-    if let Some((_, product, value)) = coolant {
-        monitors.push(MonitorStatus {
-            title: "Coolant".into(),
-            value,
-            detail: product,
-            tone: MonitorTone::Good,
-        });
-    }
-    if let Some((product, total)) = fan_totals.into_iter().max_by_key(|(_, v)| *v) {
-        monitors.push(MonitorStatus {
-            title: "Fans".into(),
-            value: format!("{} RPM", thousands(total)),
-            detail: product,
-            tone: MonitorTone::Text,
         });
     }
 
@@ -569,21 +578,20 @@ fn cpu_model() -> Option<String> {
         .filter(|model| !model.is_empty())
 }
 
-fn storage_model() -> Option<String> {
-    for entry in std::fs::read_dir("/sys/block").ok()? {
-        let path = entry.ok()?.path();
-        let name = path.file_name()?.to_string_lossy().to_string();
-        if !name.starts_with("nvme") && !name.starts_with("sd") {
-            continue;
-        }
-        if let Ok(model) = std::fs::read_to_string(path.join("device/model")) {
-            let model = model.trim();
-            if !model.is_empty() {
-                return Some(model.to_string());
-            }
-        }
+fn gpu_model() -> Option<String> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    None
+    let name = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 // -- lighting ---------------------------------------------------------
@@ -1044,5 +1052,24 @@ mod tests {
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].rpm, Some(420.0));
         assert!(channels[0].has_speed);
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn parses_storage_temperature_list() {
+        let env: StorageEnvelope = serde_json::from_str(
+            r#"{"code":200,"status":1,"data":[
+                {"Key":"hwmon0","Model":"INTEL SSDPEKNW020T8","Temperature":35.0,"TemperatureString":"35.0 °C"},
+                {"Key":"hwmon1","Model":"Samsung SSD 970 EVO Plus 2TB","Temperature":44.0,"TemperatureString":"44.0 °C"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(env.data.len(), 2);
+        assert_eq!(env.data[0].model, "INTEL SSDPEKNW020T8");
+        assert_eq!(env.data[1].temperature_string, "44.0 °C");
     }
 }

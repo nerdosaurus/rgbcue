@@ -39,8 +39,8 @@ cargo run --release -- --preview dashboard
 
 The **dashboard and sidebar are live**: device cards come from
 `/api/devices/` plus per-device detail (`/api/devices/{serial}`), and monitor
-cards from `/api/cpuTemp`, `/api/gpuTemp` and `/api/storageTemp` (coolant and fan
-speed come from the AIO/fan-controller devices). If OpenLinkHub is unreachable
+cards from `/api/cpuTemp`, `/api/gpuTemp` and `/api/storageTemp` (one card per
+disk); coolant and fan speed stay on their device cards. If OpenLinkHub is unreachable
 the preview falls back to demo data and the status pill reads **Offline**.
 
 The device, macros and settings screens are still visual previews with mock
