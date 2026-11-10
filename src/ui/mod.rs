@@ -1747,11 +1747,11 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                 let base = Color32::from_rgb(key.color[0], key.color[1], key.color[2]);
                 let selected = d.selected_key == Some(key.index);
                 let fill = if selected {
-                    t::mix(base, t::WHITE, 0.28)
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 26)
                 } else if resp.hovered() {
-                    t::mix(base, t::WHITE, 0.12)
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 13)
                 } else {
-                    base
+                    Color32::from_rgb(0x10, 0x10, 0x11)
                 };
                 painter.rect_filled(rect, CornerRadius::same(3), fill);
                 painter.rect_stroke(
@@ -1764,14 +1764,8 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                     StrokeKind::Inside,
                 );
 
-                let lum = 0.299 * key.color[0] as f32
-                    + 0.587 * key.color[1] as f32
-                    + 0.114 * key.color[2] as f32;
-                let fg = if lum > 150.0 {
-                    Color32::BLACK
-                } else {
-                    Color32::WHITE
-                };
+                // The web UI colours the legend, not the cap.
+                let fg = base;
                 let label = if key.name == "<---" {
                     "←"
                 } else {
