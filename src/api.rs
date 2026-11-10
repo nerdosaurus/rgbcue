@@ -41,11 +41,27 @@ pub struct Device {
     pub device_path: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Category {
+    Keyboard,
+    Mouse,
+    Cooling,
+    Receiver,
+    Other,
+}
+
+/// Broad device kind used by the dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    Keyboard,
+    Mouse,
+    Commander,
+    Pump,
+    Other,
+}
+
 impl Device {
-    /// Best-effort device category, inferred from the product name. The list
-    /// endpoint doesn't populate `DeviceType`, so we guess until per-device
-    /// detail is wired up.
-    pub fn kind(&self) -> &'static str {
+    fn category(&self) -> Category {
         let n = self.product.to_uppercase();
         if n.contains("KEYBOARD")
             || n.contains("STRAFE")
@@ -63,7 +79,7 @@ impl Device {
             || n.contains("CLIPPER")
             || n.contains("GALLEON")
         {
-            "Keyboard"
+            Category::Keyboard
         } else if n.contains("MOUSE")
             || n.contains("SCIMITAR")
             || n.contains("DARKSTAR")
@@ -78,7 +94,7 @@ impl Device {
             || n.contains("M65")
             || n.contains("M75")
         {
-            "Mouse"
+            Category::Mouse
         } else if n.contains("COOLER")
             || n.contains("H1")
             || n.contains("H100")
@@ -90,11 +106,45 @@ impl Device {
             || n.contains("XC")
             || n.contains("XD")
         {
-            "Cooling"
+            Category::Cooling
         } else if n.contains("RECEIVER") || n.contains("SLIPSTREAM") || n.contains("DONGLE") {
-            "Receiver"
+            Category::Receiver
         } else {
-            "Device"
+            Category::Other
+        }
+    }
+
+    /// Best-effort device category, inferred from the product name. The list
+    /// endpoint doesn't populate `DeviceType`, so we guess until per-device
+    /// detail is wired up.
+    pub fn kind(&self) -> &'static str {
+        match self.category() {
+            Category::Keyboard => "Keyboard",
+            Category::Mouse => "Mouse",
+            Category::Cooling => "Cooling",
+            Category::Receiver => "Receiver",
+            Category::Other => "Device",
+        }
+    }
+
+    /// Dashboard-level kind, splitting fan controllers from liquid coolers.
+    pub fn kind_enum(&self) -> DeviceKind {
+        let n = self.product.to_uppercase();
+        match self.category() {
+            Category::Keyboard => DeviceKind::Keyboard,
+            Category::Mouse => DeviceKind::Mouse,
+            Category::Cooling => {
+                if n.contains("COMMANDER")
+                    || n.contains("CORE")
+                    || n.contains("NODE")
+                    || n.contains("HUB")
+                {
+                    DeviceKind::Commander
+                } else {
+                    DeviceKind::Pump
+                }
+            }
+            _ => DeviceKind::Other,
         }
     }
 }
@@ -113,11 +163,7 @@ struct DevicesResponse {
 pub fn fetch_devices() -> Result<Vec<Device>, String> {
     let body = get(&format!("{BASE}/api/devices/"))?;
     let resp: DevicesResponse = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    let mut devices: Vec<Device> = resp
-        .devices
-        .into_values()
-        .filter(|d| !d.hidden)
-        .collect();
+    let mut devices: Vec<Device> = resp.devices.into_values().filter(|d| !d.hidden).collect();
     devices.sort_by(|a, b| a.product.cmp(&b.product));
     Ok(devices)
 }
@@ -129,6 +175,415 @@ fn get(url: &str) -> Result<String, String> {
         .call()
         .map_err(|e| format!("request failed: {e}"))?;
     resp.into_string().map_err(|e| format!("read failed: {e}"))
+}
+
+// -- dashboard --------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorTone {
+    Warn,
+    Good,
+    Text,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorStatus {
+    pub title: String,
+    pub value: String,
+    pub detail: String,
+    pub tone: MonitorTone,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceStatus {
+    pub product: String,
+    pub serial: String,
+    pub firmware: String,
+    pub connected: bool,
+    pub battery: Option<u8>,
+    pub kind: DeviceKind,
+    pub stat_value: String,
+    pub stat_label: String,
+    pub profile: String,
+    pub brightness: u8,
+    pub rgb_profile: String,
+    pub polling: Option<String>,
+    #[allow(dead_code)]
+    pub dpi: Option<u16>,
+}
+
+/// One snapshot of the dashboard: device cards and monitored values.
+#[derive(Debug, Clone, Default)]
+pub struct Dashboard {
+    pub devices: Vec<DeviceStatus>,
+    pub monitors: Vec<MonitorStatus>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeviceDetail {
+    #[serde(default, rename = "DeviceProfile")]
+    profile: Option<DeviceProfile>,
+    #[serde(default, rename = "PollingRates")]
+    polling_rates: HashMap<String, String>,
+    #[serde(default)]
+    devices: Option<serde_json::Value>,
+    #[serde(default, rename = "Connected")]
+    connected_cap: Option<bool>,
+    #[serde(default)]
+    connected: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeviceProfile {
+    #[serde(default, rename = "BrightnessSlider")]
+    brightness_slider: Option<u8>,
+    #[serde(default, rename = "Brightness")]
+    brightness: Option<u8>,
+    #[serde(default, rename = "RGBProfile")]
+    rgb_profile: Option<String>,
+    #[serde(default, rename = "PollingRate")]
+    polling_rate: Option<i64>,
+    #[serde(default, rename = "Profile")]
+    profile: Option<serde_json::Value>,
+    #[serde(default, rename = "Profiles")]
+    dpi_profiles: Option<serde_json::Value>,
+    #[serde(default, rename = "Label")]
+    label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct Channel {
+    #[serde(default, rename = "name")]
+    _name: String,
+    #[serde(default)]
+    rpm: Option<f64>,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default, rename = "temperatureString")]
+    temperature_string: Option<String>,
+    #[serde(default, rename = "HasSpeed")]
+    has_speed: bool,
+    #[serde(default, rename = "HasTemps")]
+    has_temps: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BatteryStat {
+    #[serde(default, rename = "Level")]
+    level: u16,
+    #[serde(default, rename = "Connected")]
+    connected: Option<bool>,
+}
+
+impl DeviceDetail {
+    fn connected(&self) -> Option<bool> {
+        self.connected_cap.or(self.connected)
+    }
+
+    fn channels(&self) -> Vec<Channel> {
+        let Some(value) = &self.devices else {
+            return Vec::new();
+        };
+        let Some(map) = value.as_object() else {
+            return Vec::new();
+        };
+        map.values()
+            .filter(|v| v.is_object())
+            .filter_map(|v| serde_json::from_value::<Channel>(v.clone()).ok())
+            .collect()
+    }
+
+    fn polling(&self) -> Option<String> {
+        let idx = self.profile.as_ref()?.polling_rate?;
+        self.polling_rates.get(&idx.to_string()).cloned()
+    }
+
+    fn dpi(&self) -> Option<u16> {
+        let p = self.profile.as_ref()?;
+        let idx = p.profile.as_ref()?.as_i64()?;
+        let entries = p.dpi_profiles.as_ref()?.as_object()?;
+        let entry = entries.get(&idx.to_string())?;
+        entry.get("Value")?.as_u64().map(|v| v as u16)
+    }
+
+    fn dpi_name(&self, idx: i64) -> Option<String> {
+        let p = self.profile.as_ref()?;
+        let entries = p.dpi_profiles.as_ref()?.as_object()?;
+        let entry = entries.get(&idx.to_string())?;
+        entry.get("Name")?.as_str().map(str::to_string)
+    }
+
+    fn profile_name(&self) -> String {
+        let Some(p) = self.profile.as_ref() else {
+            return "Default".into();
+        };
+        if let Some(v) = p.profile.as_ref() {
+            if let Some(s) = v.as_str() {
+                return s.to_string();
+            }
+            if let Some(idx) = v.as_i64() {
+                if let Some(name) = self.dpi_name(idx) {
+                    return name;
+                }
+            }
+        }
+        p.label.clone().unwrap_or_else(|| "Default".into())
+    }
+
+    fn brightness(&self) -> u8 {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.brightness_slider.or(p.brightness))
+            .unwrap_or(80)
+    }
+
+    fn rgb_profile(&self) -> String {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.rgb_profile.clone())
+            .unwrap_or_else(|| "Static".into())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceEnvelope {
+    #[serde(default)]
+    device: Option<DeviceDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StringData {
+    #[serde(default)]
+    data: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BatteryEnvelope {
+    #[serde(default)]
+    data: HashMap<String, BatteryStat>,
+}
+
+fn fetch_device_detail(serial: &str) -> Result<DeviceDetail, String> {
+    let body = get(&format!("{BASE}/api/devices/{serial}"))?;
+    let env: DeviceEnvelope = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    env.device.ok_or_else(|| "no device payload".to_string())
+}
+
+fn fetch_temperature(path: &str) -> Option<String> {
+    let body = get(&format!("{BASE}{path}")).ok()?;
+    let parsed: StringData = serde_json::from_str(&body).ok()?;
+    let value = parsed.data.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn fetch_batteries() -> HashMap<String, BatteryStat> {
+    get(&format!("{BASE}/api/batteryStats"))
+        .ok()
+        .and_then(|body| serde_json::from_str::<BatteryEnvelope>(&body).ok())
+        .map(|env| env.data)
+        .unwrap_or_default()
+}
+
+/// Fetch one live dashboard snapshot: device cards plus monitored values.
+pub fn fetch_dashboard() -> Result<Dashboard, String> {
+    let devices = fetch_devices()?;
+    let batteries = fetch_batteries();
+
+    let mut statuses = Vec::with_capacity(devices.len());
+    let mut coolant: Option<(f64, String, String)> = None;
+    let mut fan_totals: HashMap<String, u64> = HashMap::new();
+
+    for dev in &devices {
+        let detail = fetch_device_detail(&dev.serial).ok();
+        let kind = dev.kind_enum();
+        let channels = detail
+            .as_ref()
+            .map(DeviceDetail::channels)
+            .unwrap_or_default();
+        let battery = batteries.get(&dev.serial);
+        let connected = detail
+            .as_ref()
+            .and_then(DeviceDetail::connected)
+            .or_else(|| battery.and_then(|b| b.connected))
+            .unwrap_or(true);
+
+        if matches!(kind, DeviceKind::Pump) {
+            for ch in &channels {
+                if (ch.has_temps || ch.temperature.unwrap_or(0.0) > 0.0)
+                    && let Some(t) = ch.temperature
+                    && t > 0.0
+                    && coolant.as_ref().map_or(true, |(max, _, _)| t > *max)
+                {
+                    coolant = Some((
+                        t,
+                        dev.product.clone(),
+                        ch.temperature_string
+                            .clone()
+                            .unwrap_or_else(|| format!("{t:.1} °C")),
+                    ));
+                }
+            }
+        }
+
+        let total: u64 = channels
+            .iter()
+            .filter(|c| c.has_speed || c.rpm.unwrap_or(0.0) > 0.0)
+            .map(|c| c.rpm.unwrap_or(0.0).max(0.0) as u64)
+            .sum();
+        if total > 0 {
+            *fan_totals.entry(dev.product.clone()).or_insert(0) += total;
+        }
+
+        let polling = detail.as_ref().and_then(DeviceDetail::polling);
+        let dpi = detail.as_ref().and_then(DeviceDetail::dpi);
+        let profile = detail
+            .as_ref()
+            .map(DeviceDetail::profile_name)
+            .unwrap_or_else(|| "Default".into());
+        let brightness = detail.as_ref().map(DeviceDetail::brightness).unwrap_or(80);
+        let rgb_profile = detail
+            .as_ref()
+            .map(DeviceDetail::rgb_profile)
+            .unwrap_or_else(|| "Static".into());
+
+        let max_temp = channels
+            .iter()
+            .filter_map(|c| c.temperature)
+            .fold(0.0_f64, f64::max);
+
+        let (stat_value, stat_label) = match kind {
+            DeviceKind::Pump => {
+                if max_temp > 0.0 {
+                    (format!("{max_temp:.1} °C"), "Coolant".to_string())
+                } else {
+                    ("Connected".into(), "Status".into())
+                }
+            }
+            DeviceKind::Commander => {
+                if total > 0 {
+                    (thousands(total), "Fan RPM".into())
+                } else {
+                    ("Connected".into(), "Status".into())
+                }
+            }
+            DeviceKind::Keyboard => match &polling {
+                Some(p) => (p.clone(), "Polling rate".into()),
+                None => (profile.clone(), "Profile".into()),
+            },
+            DeviceKind::Mouse => {
+                if let Some(dpi) = dpi {
+                    (thousands(dpi as u64), "DPI".into())
+                } else if let Some(b) = battery {
+                    (format!("{}%", b.level), "Battery".into())
+                } else {
+                    ("Connected".into(), "Status".into())
+                }
+            }
+            DeviceKind::Other => ("Connected".into(), "Status".into()),
+        };
+
+        statuses.push(DeviceStatus {
+            product: dev.product.clone(),
+            serial: dev.serial.clone(),
+            firmware: dev.firmware.clone(),
+            connected,
+            battery: battery.map(|b| b.level.min(100) as u8),
+            kind,
+            stat_value,
+            stat_label,
+            profile,
+            brightness,
+            rgb_profile,
+            polling,
+            dpi,
+        });
+    }
+
+    let mut monitors = Vec::new();
+    if let Some(value) = fetch_temperature("/api/cpuTemp") {
+        monitors.push(MonitorStatus {
+            title: "CPU temp".into(),
+            value,
+            detail: cpu_model().unwrap_or_else(|| "Processor".into()),
+            tone: MonitorTone::Warn,
+        });
+    }
+    if let Some(value) = fetch_temperature("/api/gpuTemp") {
+        monitors.push(MonitorStatus {
+            title: "GPU temp".into(),
+            value,
+            detail: "Graphics".into(),
+            tone: MonitorTone::Warn,
+        });
+    }
+    if let Some(value) = fetch_temperature("/api/storageTemp") {
+        monitors.push(MonitorStatus {
+            title: "Storage".into(),
+            value,
+            detail: storage_model().unwrap_or_else(|| "Storage".into()),
+            tone: MonitorTone::Warn,
+        });
+    }
+    if let Some((_, product, value)) = coolant {
+        monitors.push(MonitorStatus {
+            title: "Coolant".into(),
+            value,
+            detail: product,
+            tone: MonitorTone::Good,
+        });
+    }
+    if let Some((product, total)) = fan_totals.into_iter().max_by_key(|(_, v)| *v) {
+        monitors.push(MonitorStatus {
+            title: "Fans".into(),
+            value: format!("{} RPM", thousands(total)),
+            detail: product,
+            tone: MonitorTone::Text,
+        });
+    }
+
+    Ok(Dashboard {
+        devices: statuses,
+        monitors,
+    })
+}
+
+/// Group digits with spaces, matching the web UI's `1 240` style.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn cpu_model() -> Option<String> {
+    let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    info.lines()
+        .find(|line| line.starts_with("model name"))
+        .and_then(|line| line.split_once(':'))
+        .map(|(_, model)| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
+fn storage_model() -> Option<String> {
+    for entry in std::fs::read_dir("/sys/block").ok()? {
+        let path = entry.ok()?.path();
+        let name = path.file_name()?.to_string_lossy().to_string();
+        if !name.starts_with("nvme") && !name.starts_with("sd") {
+            continue;
+        }
+        if let Ok(model) = std::fs::read_to_string(path.join("device/model")) {
+            let model = model.trim();
+            if !model.is_empty() {
+                return Some(model.to_string());
+            }
+        }
+    }
+    None
 }
 
 // -- lighting ---------------------------------------------------------
@@ -448,7 +903,11 @@ pub fn reorder_macro_actions(
 
 /// Set the global text-typing delay + jitter and the delay-action jitter
 /// (persisted by OpenLinkHub).
-pub fn set_text_delay(delay_ms: i32, variance_ms: i32, delay_variance_ms: i32) -> Result<(), String> {
+pub fn set_text_delay(
+    delay_ms: i32,
+    variance_ms: i32,
+    delay_variance_ms: i32,
+) -> Result<(), String> {
     send_json(
         "POST",
         &format!("{BASE}/api/settings/textDelay"),
@@ -517,4 +976,73 @@ pub fn fetch_media_keys() -> Result<Vec<(u16, InputKey)>, String> {
 /// Mouse buttons (Left/Right/Middle/Back/Forward).
 pub fn fetch_mouse_buttons() -> Result<Vec<(u16, InputKey)>, String> {
     fetch_input_map("/api/input/mouse")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1235), "1 235");
+        assert_eq!(thousands(18000), "18 000");
+    }
+
+    #[test]
+    fn parses_keyboard_profile() {
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "DeviceProfile": {
+                    "BrightnessSlider": 80,
+                    "RGBProfile": "Rainbow Wave",
+                    "PollingRate": 3,
+                    "Profile": "Default"
+                },
+                "PollingRates": {"3": "1000 Hz"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(detail.polling().as_deref(), Some("1000 Hz"));
+        assert_eq!(detail.profile_name(), "Default");
+        assert_eq!(detail.brightness(), 80);
+        assert_eq!(detail.rgb_profile(), "Rainbow Wave");
+        assert!(detail.dpi().is_none());
+    }
+
+    #[test]
+    fn parses_mouse_dpi() {
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "DeviceProfile": {
+                    "Profile": 1,
+                    "Profiles": {
+                        "0": {"Name": "Default", "Value": 800},
+                        "1": {"Name": "FPS", "Value": 1600}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(detail.dpi(), Some(1600));
+        assert_eq!(detail.profile_name(), "FPS");
+    }
+
+    #[test]
+    fn parses_channels_and_skips_string_maps() {
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "devices": {
+                    "0": {"name": "Fan 1", "rpm": 420, "HasSpeed": true},
+                    "1": "Logo"
+                }
+            }"#,
+        )
+        .unwrap();
+        let channels = detail.channels();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].rpm, Some(420.0));
+        assert!(channels[0].has_speed);
+    }
 }

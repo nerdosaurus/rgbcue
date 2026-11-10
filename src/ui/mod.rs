@@ -1,16 +1,19 @@
 //! Ported OpenLinkHub web UI, rendered natively with egui.
 //!
-//! This is a visual shell only: it uses mock devices and local widget state, and
-//! never talks to the OpenLinkHub API. Launch it with `rgbcue --preview`.
+//! The dashboard and sidebar are wired to the OpenLinkHub API; other screens
+//! are still visual previews. Launch it with `rgbcue --preview`.
 
 pub mod icons;
 pub mod theme;
 
+use crate::api;
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, ScrollArea, Sense,
     Stroke, StrokeKind, Ui, Vec2,
 };
 use icons::Icon;
+use std::sync::mpsc;
+use std::time::Duration;
 use theme as t;
 
 const PROFILES: &[&str] = &["Default", "Profile 1", "Profile 2", "Profile 3"];
@@ -50,11 +53,12 @@ enum Kind {
     Pump,
 }
 
+#[derive(Clone)]
 struct Device {
-    name: &'static str,
+    name: String,
     kind: Kind,
-    firmware: &'static str,
-    serial: &'static str,
+    firmware: String,
+    serial: String,
     connected: bool,
     battery: Option<u8>,
     profile: usize,
@@ -64,9 +68,7 @@ struct Device {
     polling: usize,
     layout: usize,
     cluster: bool,
-    stat: (&'static str, &'static str),
-    #[allow(dead_code)]
-    detail: [(&'static str, &'static str); 2],
+    stat: (String, String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,9 +85,9 @@ enum Page {
 }
 
 struct Monitor {
-    title: &'static str,
-    value: &'static str,
-    detail: &'static str,
+    title: String,
+    value: String,
+    detail: String,
     color: Color32,
 }
 
@@ -99,6 +101,11 @@ enum Group {
 struct DragItem {
     group: Group,
     pos: usize,
+}
+
+enum DashMsg {
+    Ok(api::Dashboard),
+    Err(String),
 }
 
 pub fn run(page: &str) -> eframe::Result<()> {
@@ -161,10 +168,15 @@ struct PreviewApp {
     lang_idx: usize,
     celsius: bool,
     autostart: bool,
+    dash_rx: mpsc::Receiver<DashMsg>,
+    refresh_tx: mpsc::Sender<()>,
+    live: bool,
+    error: Option<String>,
 }
 
 impl PreviewApp {
     fn new(page: Page) -> Self {
+        let (refresh_tx, dash_rx) = spawn_poller();
         Self {
             page,
             collapsed: false,
@@ -174,46 +186,50 @@ impl PreviewApp {
             lang_idx: 0,
             celsius: true,
             autostart: true,
+            dash_rx,
+            refresh_tx,
+            live: false,
+            error: None,
             monitor_order: (0..5).collect(),
             device_order: (0..5).collect(),
             monitors: vec![
                 Monitor {
-                    title: "CPU temp",
-                    value: "41 °C",
-                    detail: "Ryzen 9 7950X",
+                    title: "CPU temp".into(),
+                    value: "41 °C".into(),
+                    detail: "Ryzen 9 7950X".into(),
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "GPU temp",
-                    value: "58 °C",
-                    detail: "RTX 3090",
+                    title: "GPU temp".into(),
+                    value: "58 °C".into(),
+                    detail: "RTX 3090".into(),
                     color: t::WARN,
                 },
                 Monitor {
-                    title: "Coolant",
-                    value: "32 °C",
-                    detail: "H115i Platinum",
+                    title: "Coolant".into(),
+                    value: "32 °C".into(),
+                    detail: "H115i Platinum".into(),
                     color: t::ACCENT,
                 },
                 Monitor {
-                    title: "Fans",
-                    value: "1 240 RPM",
-                    detail: "Commander PRO",
+                    title: "Fans".into(),
+                    value: "1 240 RPM".into(),
+                    detail: "Commander PRO".into(),
                     color: t::TEXT,
                 },
                 Monitor {
-                    title: "Storage",
-                    value: "46 °C",
-                    detail: "990 PRO 2 TB",
+                    title: "Storage".into(),
+                    value: "46 °C".into(),
+                    detail: "990 PRO 2 TB".into(),
                     color: t::WARN,
                 },
             ],
             devices: vec![
                 Device {
-                    name: "K65 RGB MINI",
+                    name: "K65 RGB MINI".into(),
                     kind: Kind::Keyboard,
-                    firmware: "1.0.8",
-                    serial: "K65-01",
+                    firmware: "1.0.8".into(),
+                    serial: "K65-01".into(),
                     connected: true,
                     battery: None,
                     profile: 0,
@@ -223,14 +239,13 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
-                    stat: ("1000 Hz", "Polling rate"),
-                    detail: [("Layout", "US"), ("Profile", "Default")],
+                    stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
-                    name: "Scimitar RGB Elite",
+                    name: "Scimitar RGB Elite".into(),
                     kind: Kind::Mouse,
-                    firmware: "3.12",
-                    serial: "SCIM-01",
+                    firmware: "3.12".into(),
+                    serial: "SCIM-01".into(),
                     connected: true,
                     battery: None,
                     profile: 0,
@@ -240,14 +255,13 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
-                    stat: ("18 000", "DPI"),
-                    detail: [("Buttons", "17"), ("Profile", "Default")],
+                    stat: ("18 000".into(), "DPI".into()),
                 },
                 Device {
-                    name: "Scimitar Elite Wireless SE",
+                    name: "Scimitar Elite Wireless SE".into(),
                     kind: Kind::Mouse,
-                    firmware: "2.1.4",
-                    serial: "SCIM-SE",
+                    firmware: "2.1.4".into(),
+                    serial: "SCIM-SE".into(),
                     connected: true,
                     battery: Some(84),
                     profile: 1,
@@ -257,14 +271,13 @@ impl PreviewApp {
                     polling: 3,
                     layout: 0,
                     cluster: false,
-                    stat: ("1 600", "DPI"),
-                    detail: [("Battery", "84%"), ("Profile", "FPS")],
+                    stat: ("1 600".into(), "DPI".into()),
                 },
                 Device {
-                    name: "Commander PRO",
+                    name: "Commander PRO".into(),
                     kind: Kind::Commander,
-                    firmware: "0.9.2",
-                    serial: "CPRO-1",
+                    firmware: "0.9.2".into(),
+                    serial: "CPRO-1".into(),
                     connected: true,
                     battery: None,
                     profile: 0,
@@ -274,14 +287,13 @@ impl PreviewApp {
                     polling: 0,
                     layout: 0,
                     cluster: false,
-                    stat: ("1 240", "Fan RPM"),
-                    detail: [("Fans", "3"), ("Sensors", "4")],
+                    stat: ("1 240".into(), "Fan RPM".into()),
                 },
                 Device {
-                    name: "H115i RGB Platinum",
+                    name: "H115i RGB Platinum".into(),
                     kind: Kind::Pump,
-                    firmware: "1.2.0",
-                    serial: "H115I-1",
+                    firmware: "1.2.0".into(),
+                    serial: "H115I-1".into(),
                     connected: true,
                     battery: None,
                     profile: 0,
@@ -291,20 +303,143 @@ impl PreviewApp {
                     polling: 0,
                     layout: 0,
                     cluster: false,
-                    stat: ("32 °C", "Coolant"),
-                    detail: [("Pump", "2 100 RPM"), ("Profile", "Balanced")],
+                    stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
         }
     }
 
+    fn apply_dashboard(&mut self, dash: api::Dashboard) {
+        let selected = match self.page {
+            Page::Device(i) => self.devices.get(i).map(|d| d.serial.clone()),
+            _ => None,
+        };
+        let old_serials: Vec<String> = self.devices.iter().map(|d| d.serial.clone()).collect();
+        let old_order = std::mem::take(&mut self.device_order);
+
+        let mut next = Vec::with_capacity(dash.devices.len());
+        for s in dash.devices {
+            let kind = match s.kind {
+                api::DeviceKind::Keyboard => Kind::Keyboard,
+                api::DeviceKind::Mouse => Kind::Mouse,
+                api::DeviceKind::Commander => Kind::Commander,
+                api::DeviceKind::Pump => Kind::Pump,
+                api::DeviceKind::Other => Kind::Mouse,
+            };
+            if let Some(old) = self.devices.iter().find(|d| d.serial == s.serial) {
+                let mut d = old.clone();
+                d.name = s.product;
+                d.firmware = s.firmware;
+                d.connected = s.connected;
+                d.battery = s.battery;
+                d.kind = kind;
+                d.stat = (s.stat_value, s.stat_label);
+                next.push(d);
+            } else {
+                let profile = PROFILES
+                    .iter()
+                    .position(|p| *p == s.profile.as_str())
+                    .unwrap_or(0);
+                let effect = EFFECTS
+                    .iter()
+                    .position(|e| *e == s.rgb_profile.as_str())
+                    .unwrap_or(0);
+                let polling = s
+                    .polling
+                    .as_deref()
+                    .and_then(|p| POLLING.iter().position(|x| *x == p))
+                    .unwrap_or(3);
+                next.push(Device {
+                    name: s.product,
+                    kind,
+                    firmware: s.firmware,
+                    serial: s.serial,
+                    connected: s.connected,
+                    battery: s.battery,
+                    profile,
+                    brightness: s.brightness as f32,
+                    effect,
+                    speed: 50.0,
+                    polling,
+                    layout: 0,
+                    cluster: false,
+                    stat: (s.stat_value, s.stat_label),
+                });
+            }
+        }
+
+        let mut order = Vec::new();
+        for idx in old_order {
+            if let Some(serial) = old_serials.get(idx)
+                && let Some(pos) = next.iter().position(|d| &d.serial == serial)
+                && !order.contains(&pos)
+            {
+                order.push(pos);
+            }
+        }
+        for i in 0..next.len() {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+        self.devices = next;
+        self.device_order = order;
+
+        let old_titles: Vec<String> = self.monitors.iter().map(|m| m.title.clone()).collect();
+        let old_monitor_order = std::mem::take(&mut self.monitor_order);
+        self.monitors = dash
+            .monitors
+            .into_iter()
+            .map(|m| Monitor {
+                title: m.title,
+                value: m.value,
+                detail: m.detail,
+                color: match m.tone {
+                    api::MonitorTone::Warn => t::WARN,
+                    api::MonitorTone::Good => t::GOOD,
+                    api::MonitorTone::Text => t::TEXT,
+                },
+            })
+            .collect();
+
+        let mut morder = Vec::new();
+        for idx in old_monitor_order {
+            if let Some(title) = old_titles.get(idx)
+                && let Some(pos) = self.monitors.iter().position(|m| &m.title == title)
+                && !morder.contains(&pos)
+            {
+                morder.push(pos);
+            }
+        }
+        for i in 0..self.monitors.len() {
+            if !morder.contains(&i) {
+                morder.push(i);
+            }
+        }
+        self.monitor_order = morder;
+
+        if let Some(serial) = selected {
+            self.page = match self.devices.iter().position(|d| d.serial == serial) {
+                Some(i) => Page::Device(i),
+                None => Page::Dashboard,
+            };
+        }
+    }
+
     fn subtitle(&self) -> String {
         match self.page {
-            Page::Dashboard => format!(
-                "{} monitors · {} devices · OpenLinkHub 0.9.5",
-                self.monitors.len(),
-                self.devices.len()
-            ),
+            Page::Dashboard => {
+                let suffix = if self.error.is_some() && !self.live {
+                    " · demo data"
+                } else {
+                    ""
+                };
+                format!(
+                    "{} monitors · {} devices{suffix}",
+                    self.monitors.len(),
+                    self.devices.len()
+                )
+            }
             Page::Device(i) => format!(
                 "{} · firmware {}",
                 self.devices[i].serial, self.devices[i].firmware
@@ -318,7 +453,7 @@ impl PreviewApp {
     fn title(&self) -> String {
         match self.page {
             Page::Dashboard => "Dashboard".into(),
-            Page::Device(i) => self.devices[i].name.into(),
+            Page::Device(i) => self.devices[i].name.clone(),
             Page::Apps => "Applications".into(),
             Page::Lcd => "LCD".into(),
             Page::Macros => "Macros".into(),
@@ -406,7 +541,7 @@ impl PreviewApp {
                     if t::nav_item(
                         ui,
                         icon,
-                        d.name,
+                        &d.name,
                         self.page == Page::Device(i),
                         self.collapsed,
                     ) {
@@ -548,9 +683,18 @@ impl PreviewApp {
                 ui.label(RichText::new(self.subtitle()).size(12.0).color(t::MUTED));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                t::pill(ui, "Connected", t::GOOD);
+                let (label, color) = if self.error.is_some() {
+                    ("Offline", t::BAD)
+                } else if self.live {
+                    ("Live", t::GOOD)
+                } else {
+                    ("Connecting", t::MUTED)
+                };
+                t::pill(ui, label, color);
                 ui.add_space(4.0);
-                let _ = t::button(ui, "Refresh", t::Btn::Ghost);
+                if t::button(ui, "Refresh", t::Btn::Ghost) {
+                    let _ = self.refresh_tx.send(());
+                }
             });
         });
     }
@@ -654,10 +798,15 @@ impl PreviewApp {
                         ui.set_width(272.0);
                         t::section_label(ui, "Device");
                         ui.add_space(4.0);
-                        ui.label(RichText::new(d.name).size(14.0).strong().color(t::WHITE));
+                        ui.label(
+                            RichText::new(d.name.as_str())
+                                .size(14.0)
+                                .strong()
+                                .color(t::WHITE),
+                        );
                         ui.add_space(8.0);
 
-                        t::stat_row(ui, "Firmware", d.firmware);
+                        t::stat_row(ui, "Firmware", &d.firmware);
                         t::settings_row(ui, "Profile", |ui| {
                             t::select(ui, PROFILES, &mut d.profile)
                         });
@@ -927,6 +1076,18 @@ impl eframe::App for PreviewApp {
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
         }
 
+        while let Ok(msg) = self.dash_rx.try_recv() {
+            match msg {
+                DashMsg::Ok(dash) => {
+                    self.apply_dashboard(dash);
+                    self.live = true;
+                    self.error = None;
+                }
+                DashMsg::Err(err) => self.error = Some(err),
+            }
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(750));
+
         let full = ui.max_rect();
         let sidebar_w = if self.collapsed { 72.0 } else { 260.0 };
         let sidebar = Rect::from_min_size(full.min, Vec2::new(sidebar_w, full.height()));
@@ -948,6 +1109,27 @@ impl eframe::App for PreviewApp {
 }
 
 // ---- dashboard tiles -------------------------------------------------------
+
+fn spawn_poller() -> (mpsc::Sender<()>, mpsc::Receiver<DashMsg>) {
+    let (tx, rx) = mpsc::channel();
+    let (req_tx, req_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            let msg = match api::fetch_dashboard() {
+                Ok(dash) => DashMsg::Ok(dash),
+                Err(err) => DashMsg::Err(err),
+            };
+            if tx.send(msg).is_err() {
+                break;
+            }
+            match req_rx.recv_timeout(Duration::from_secs(4)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+    (req_tx, rx)
+}
 
 fn menu_button(ui: &mut Ui) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
@@ -1051,7 +1233,7 @@ fn monitor_card(
         ui.painter().text(
             egui::pos2(r.left(), r.top() + 26.0),
             Align2::LEFT_TOP,
-            m.value,
+            &m.value,
             FontId::proportional(17.0),
             m.color,
         );
@@ -1059,7 +1241,7 @@ fn monitor_card(
         ui.painter().with_clip_rect(detail_clip).text(
             egui::pos2(r.left(), r.top() + 54.0),
             Align2::LEFT_TOP,
-            m.detail,
+            &m.detail,
             FontId::proportional(9.0),
             t::DIM,
         );
@@ -1108,7 +1290,12 @@ fn device_card(
         }
 
         ui.add_space(6.0);
-        ui.label(RichText::new(d.stat.0).size(26.0).strong().color(t::WHITE));
+        ui.label(
+            RichText::new(d.stat.0.as_str())
+                .size(26.0)
+                .strong()
+                .color(t::WHITE),
+        );
         ui.label(
             RichText::new(d.stat.1.to_uppercase())
                 .size(9.0)
