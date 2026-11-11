@@ -65,6 +65,17 @@ impl Kind {
     }
 }
 
+fn default_assignment_types() -> Vec<(i32, String)> {
+    vec![
+        (0, "None".into()),
+        (1, "Media Keys".into()),
+        (3, "Keyboard".into()),
+        (9, "Mouse".into()),
+        (10, "Macro".into()),
+        (21, "Change Profile".into()),
+    ]
+}
+
 fn default_profiles() -> Vec<String> {
     PROFILES.iter().map(|s| s.to_string()).collect()
 }
@@ -107,6 +118,10 @@ struct Device {
     keyboard: Option<api::KeyboardLayout>,
     selected_key: Option<i32>,
     key_scope: usize,
+    keyboard_profiles: Vec<String>,
+    keyboard_profile: usize,
+    new_profile_name: String,
+    assignment_types: Vec<(i32, String)>,
     stat: (String, String),
 }
 
@@ -148,6 +163,19 @@ enum DashMsg {
     Err(String),
 }
 
+struct AssignmentEditor {
+    serial: String,
+    key_index: i32,
+    key_name: String,
+    types: Vec<(i32, String)>,
+    type_idx: usize,
+    values: Vec<(String, String)>,
+    value_idx: usize,
+    custom_value: String,
+    default: bool,
+    hold: bool,
+}
+
 enum DeviceAction {
     Profile(String),
     Rgb(String),
@@ -159,6 +187,10 @@ enum DeviceAction {
         option: i32,
         color: [u8; 3],
     },
+    KeyboardProfile(String),
+    SaveKeyboardProfile,
+    NewKeyboardProfile(String),
+    DeleteKeyboardProfile(String),
     Assignments,
     Add,
     Remove,
@@ -231,6 +263,7 @@ struct PreviewApp {
     add_choice: usize,
     pending_brightness: Option<(String, u8, Instant)>,
     notice: Option<(String, bool)>,
+    assignment_editor: Option<AssignmentEditor>,
 }
 
 impl PreviewApp {
@@ -252,6 +285,7 @@ impl PreviewApp {
             add_choice: 0,
             pending_brightness: None,
             notice: None,
+            assignment_editor: None,
             monitor_order: (0..5).collect(),
             device_order: (0..5).collect(),
             monitors: vec![
@@ -313,6 +347,10 @@ impl PreviewApp {
                     keyboard: None,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profiles: Vec::new(),
+                    keyboard_profile: 0,
+                    new_profile_name: String::new(),
+                    assignment_types: default_assignment_types(),
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -336,6 +374,10 @@ impl PreviewApp {
                     keyboard: None,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profiles: Vec::new(),
+                    keyboard_profile: 0,
+                    new_profile_name: String::new(),
+                    assignment_types: default_assignment_types(),
                     stat: ("18 000".into(), "DPI".into()),
                 },
                 Device {
@@ -359,6 +401,10 @@ impl PreviewApp {
                     keyboard: None,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profiles: Vec::new(),
+                    keyboard_profile: 0,
+                    new_profile_name: String::new(),
+                    assignment_types: default_assignment_types(),
                     stat: ("1 600".into(), "DPI".into()),
                 },
                 Device {
@@ -382,6 +428,10 @@ impl PreviewApp {
                     keyboard: None,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profiles: Vec::new(),
+                    keyboard_profile: 0,
+                    new_profile_name: String::new(),
+                    assignment_types: default_assignment_types(),
                     stat: ("1 240".into(), "Fan RPM".into()),
                 },
                 Device {
@@ -405,6 +455,10 @@ impl PreviewApp {
                     keyboard: None,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profiles: Vec::new(),
+                    keyboard_profile: 0,
+                    new_profile_name: String::new(),
+                    assignment_types: default_assignment_types(),
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
@@ -413,7 +467,15 @@ impl PreviewApp {
 
     fn apply_device_action(&mut self, idx: usize, action: DeviceAction) {
         let d = &self.devices[idx];
-        let refresh = matches!(action, DeviceAction::Add | DeviceAction::Remove);
+        let refresh = matches!(
+            action,
+            DeviceAction::Add
+                | DeviceAction::Remove
+                | DeviceAction::KeyboardProfile(_)
+                | DeviceAction::SaveKeyboardProfile
+                | DeviceAction::NewKeyboardProfile(_)
+                | DeviceAction::DeleteKeyboardProfile(_)
+        );
         let message = match &action {
             DeviceAction::Profile(_) => "Profile updated",
             DeviceAction::Rgb(_) => "RGB profile applied",
@@ -421,6 +483,10 @@ impl PreviewApp {
             DeviceAction::Polling(_) => "Polling rate updated",
             DeviceAction::Cluster(_) => "RGB cluster updated",
             DeviceAction::KeyColor { .. } => "Key colour applied",
+            DeviceAction::KeyboardProfile(_) => "Keyboard profile changed",
+            DeviceAction::SaveKeyboardProfile => "Keyboard profile saved",
+            DeviceAction::NewKeyboardProfile(_) => "Keyboard profile created",
+            DeviceAction::DeleteKeyboardProfile(_) => "Keyboard profile deleted",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -438,8 +504,14 @@ impl PreviewApp {
                 option,
                 color,
             } => api::set_keyboard_color(&d.serial, key_id, option, color),
+            DeviceAction::KeyboardProfile(name) => api::change_keyboard_profile(&d.serial, &name),
+            DeviceAction::SaveKeyboardProfile => api::save_keyboard_profile(&d.serial),
+            DeviceAction::NewKeyboardProfile(name) => api::new_keyboard_profile(&d.serial, &name),
+            DeviceAction::DeleteKeyboardProfile(name) => {
+                api::delete_keyboard_profile(&d.serial, &name)
+            }
             DeviceAction::Assignments => {
-                self.notice = Some(("Key assignment editor is not wired yet".into(), false));
+                self.open_assignment_editor(idx);
                 return;
             }
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
@@ -451,6 +523,196 @@ impl PreviewApp {
         });
         if refresh {
             let _ = self.refresh_tx.send(());
+        }
+    }
+
+    fn open_assignment_editor(&mut self, idx: usize) {
+        let d = &self.devices[idx];
+        let Some(key_index) = d.selected_key else {
+            self.notice = Some(("Select a key first".into(), false));
+            return;
+        };
+        let Some(key) = d.keyboard.as_ref().and_then(|layout| {
+            layout
+                .rows
+                .iter()
+                .flat_map(|row| row.keys.iter())
+                .find(|key| key.index == key_index)
+        }) else {
+            self.notice = Some(("No key data for this key".into(), false));
+            return;
+        };
+        let types = if d.assignment_types.is_empty() {
+            default_assignment_types()
+        } else {
+            d.assignment_types.clone()
+        };
+        let current_type = key.action_type as i32;
+        let type_idx = types
+            .iter()
+            .position(|(code, _)| *code == current_type)
+            .unwrap_or(0);
+        let values = assignment_values(types[type_idx].0, &d.profiles);
+        let current = key.action_command.to_string();
+        let value_idx = values
+            .iter()
+            .position(|(value, _)| *value == current)
+            .unwrap_or(0);
+        self.assignment_editor = Some(AssignmentEditor {
+            serial: d.serial.clone(),
+            key_index,
+            key_name: key.name.clone(),
+            types,
+            type_idx,
+            values,
+            value_idx,
+            custom_value: current,
+            default: key.default,
+            hold: key.action_hold,
+        });
+    }
+
+    fn assignment_panel(&mut self, ui: &mut Ui) {
+        let Some(serial) = self.assignment_editor.as_ref().map(|e| e.serial.clone()) else {
+            return;
+        };
+        let profiles = self
+            .devices
+            .iter()
+            .find(|d| d.serial == serial)
+            .map(|d| d.profiles.clone())
+            .unwrap_or_default();
+        let Some(editor) = self.assignment_editor.as_mut() else {
+            return;
+        };
+
+        let mut save = false;
+        let mut close = false;
+        let ctx = ui.ctx().clone();
+        let screen = ctx.viewport_rect();
+        egui::Area::new(egui::Id::unique("assignment-dim"))
+            .fixed_pos(screen.min)
+            .order(egui::Order::Middle)
+            .show(&ctx, |ui| {
+                ui.allocate_rect(screen, Sense::click());
+                ui.painter()
+                    .rect_filled(screen, 0, Color32::from_black_alpha(130));
+            });
+        egui::Window::new("key-assignment-editor")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .frame(
+                egui::Frame::NONE
+                    .fill(t::CARD)
+                    .stroke(Stroke::new(1.0, t::BORDER))
+                    .corner_radius(14)
+                    .inner_margin(16),
+            )
+            .show(&ctx, |ui| {
+                ui.set_width(440.0);
+                ui.horizontal(|ui| {
+                    t::section_label(ui, "Key assignment");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if t::button(ui, "Close", t::Btn::Ghost) {
+                            close = true;
+                        }
+                    });
+                });
+                ui.label(
+                    RichText::new(&editor.key_name)
+                        .size(18.0)
+                        .strong()
+                        .color(t::WHITE),
+                );
+                ui.add_space(8.0);
+                t::divider(ui);
+                ui.add_space(8.0);
+
+                t::section_label(ui, "Action");
+                let type_labels: Vec<String> =
+                    editor.types.iter().map(|(_, name)| name.clone()).collect();
+                if t::select_strings(ui, &type_labels, &mut editor.type_idx) {
+                    let code = editor.types[editor.type_idx].0;
+                    editor.values = assignment_values(code, &profiles);
+                    editor.value_idx = 0;
+                    editor.custom_value.clear();
+                    if code != 0 {
+                        editor.default = false;
+                    }
+                }
+
+                ui.add_space(8.0);
+                t::section_label(ui, "Value");
+                if editor.values.is_empty() {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut editor.custom_value)
+                            .hint_text("Value")
+                            .desired_width(200.0)
+                            .text_color(t::TEXT),
+                    );
+                } else {
+                    let value_labels: Vec<String> =
+                        editor.values.iter().map(|(_, name)| name.clone()).collect();
+                    t::select_strings(ui, &value_labels, &mut editor.value_idx);
+                }
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Use default").size(11.5).color(t::MUTED));
+                    t::switch(ui, &mut editor.default);
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Press and hold").size(11.5).color(t::MUTED));
+                    t::switch(ui, &mut editor.hold);
+                });
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if t::button(ui, "Save", t::Btn::Success) {
+                        save = true;
+                    }
+                    if t::button(ui, "Cancel", t::Btn::Normal) {
+                        close = true;
+                    }
+                });
+            });
+
+        if save {
+            let editor = self.assignment_editor.take().expect("editor open");
+            let type_code = editor.types[editor.type_idx].0;
+            let string_type = matches!(type_code, 2 | 4 | 8 | 21 | 22 | 23);
+            let raw = if editor.values.is_empty() {
+                editor.custom_value.trim().to_string()
+            } else {
+                editor.values[editor.value_idx].0.clone()
+            };
+            let (value, value_string) = if raw.is_empty() {
+                (None, None)
+            } else if string_type {
+                (None, Some(raw))
+            } else {
+                (raw.parse::<i64>().ok(), None)
+            };
+            match api::update_key_assignment(
+                &editor.serial,
+                editor.key_index,
+                editor.default,
+                editor.hold,
+                type_code,
+                value,
+                value_string.as_deref(),
+                0,
+            ) {
+                Ok(()) => {
+                    self.notice = Some(("Key assignment updated".into(), true));
+                    let _ = self.refresh_tx.send(());
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        } else if close {
+            self.assignment_editor = None;
         }
     }
 
@@ -479,6 +741,17 @@ impl PreviewApp {
                 d.battery = s.battery;
                 d.kind = kind;
                 d.keyboard = s.keyboard;
+                if !s.assignment_types.is_empty() {
+                    d.assignment_types = s.assignment_types.clone();
+                }
+                if !s.keyboard_profiles.is_empty() {
+                    d.keyboard_profiles = s.keyboard_profiles.clone();
+                    d.keyboard_profile = d
+                        .keyboard_profiles
+                        .iter()
+                        .position(|p| *p == s.active_keyboard_profile)
+                        .unwrap_or(0);
+                }
                 d.stat = (s.stat_value, s.stat_label);
                 next.push(d);
             } else {
@@ -539,6 +812,14 @@ impl PreviewApp {
                     keyboard: s.keyboard,
                     selected_key: None,
                     key_scope: 0,
+                    keyboard_profile: s
+                        .keyboard_profiles
+                        .iter()
+                        .position(|p| *p == s.active_keyboard_profile)
+                        .unwrap_or(0),
+                    keyboard_profiles: s.keyboard_profiles,
+                    new_profile_name: String::new(),
+                    assignment_types: s.assignment_types,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -1114,6 +1395,8 @@ impl PreviewApp {
             });
         });
 
+        self.assignment_panel(ui);
+
         if let Some(value) = brightness {
             let serial = self.devices[idx].serial.clone();
             self.pending_brightness = Some((
@@ -1684,6 +1967,30 @@ fn add_card(ui: &mut Ui, width: f32, names: &[String], choice: &mut usize) -> bo
 
 // ---- device page cards -----------------------------------------------------
 
+fn assignment_values(type_code: i32, profiles: &[String]) -> Vec<(String, String)> {
+    let pairs = |items: Vec<(u16, api::InputKey)>| {
+        items
+            .into_iter()
+            .map(|(code, key)| (code.to_string(), key.name))
+            .collect::<Vec<_>>()
+    };
+    match type_code {
+        1 => pairs(api::fetch_media_keys().unwrap_or_default()),
+        3 => pairs(api::fetch_keyboard_keys().unwrap_or_default()),
+        9 => pairs(api::fetch_mouse_buttons().unwrap_or_default()),
+        10 => api::fetch_macros()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| (m.id.to_string(), m.name))
+            .collect(),
+        21 | 22 | 23 => profiles
+            .iter()
+            .map(|name| (name.clone(), name.clone()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<DeviceAction> {
     let mut action = None;
     let Some(layout) = d.keyboard.clone() else {
@@ -1844,6 +2151,41 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                 action = Some(DeviceAction::Assignments);
             }
         });
+        ui.add_space(6.0);
+        ui.visuals_mut().extreme_bg_color = t::FIELD;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 6.0);
+            ui.label(RichText::new("Profile").size(10.0).color(t::MUTED));
+            if !d.keyboard_profiles.is_empty() {
+                let profiles = d.keyboard_profiles.clone();
+                if t::select_strings(ui, &profiles, &mut d.keyboard_profile) {
+                    action = Some(DeviceAction::KeyboardProfile(
+                        profiles[d.keyboard_profile].clone(),
+                    ));
+                }
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut d.new_profile_name)
+                    .hint_text("New profile name")
+                    .desired_width(120.0)
+                    .text_color(t::TEXT),
+            );
+            let can_save_as = !d.new_profile_name.trim().is_empty();
+            if t::button(ui, "Save As", t::Btn::Normal) && can_save_as {
+                action = Some(DeviceAction::NewKeyboardProfile(
+                    d.new_profile_name.trim().to_string(),
+                ));
+            }
+            if t::button(ui, "Save", t::Btn::Success) {
+                action = Some(DeviceAction::SaveKeyboardProfile);
+            }
+            if t::button(ui, "Delete", t::Btn::Danger) && !d.keyboard_profiles.is_empty() {
+                action = Some(DeviceAction::DeleteKeyboardProfile(
+                    d.keyboard_profiles[d.keyboard_profile].clone(),
+                ));
+            }
+        });
+
         if d.selected_key.is_none() && d.key_scope != 2 {
             ui.add_space(4.0);
             ui.label(

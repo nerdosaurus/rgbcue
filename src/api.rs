@@ -205,6 +205,12 @@ pub struct KeyCap {
     pub index: i32,
     #[allow(dead_code)]
     pub row: i32,
+    pub action_type: u8,
+    pub action_command: u16,
+    pub action_hold: bool,
+    pub default: bool,
+    #[allow(dead_code)]
+    pub retain_original: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +246,9 @@ pub struct DeviceStatus {
     pub active_polling: i64,
     pub cluster: bool,
     pub keyboard: Option<KeyboardLayout>,
+    pub keyboard_profiles: Vec<String>,
+    pub active_keyboard_profile: String,
+    pub assignment_types: Vec<(i32, String)>,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
@@ -266,6 +275,8 @@ struct DeviceDetail {
     rgb_modes: Vec<String>,
     #[serde(default, rename = "Layouts")]
     layouts: Vec<String>,
+    #[serde(default, rename = "KeyAssignmentTypes")]
+    assignment_types: HashMap<String, String>,
     #[serde(default, rename = "Connected")]
     connected_cap: Option<bool>,
     #[serde(default)]
@@ -419,6 +430,38 @@ impl DeviceDetail {
             .unwrap_or(false)
     }
 
+    fn assignment_types(&self) -> Vec<(i32, String)> {
+        let mut items: Vec<(i32, String)> = self
+            .assignment_types
+            .iter()
+            .filter_map(|(k, v)| k.parse::<i32>().ok().map(|n| (n, v.clone())))
+            .collect();
+        items.sort_by_key(|(n, _)| *n);
+        items
+    }
+
+    fn keyboard_profiles(&self) -> Vec<String> {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.dpi_profiles.as_ref())
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn active_keyboard_profile(&self) -> Option<String> {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.profile.as_ref())
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
     fn keyboard_layout(&self) -> Option<KeyboardLayout> {
         let p = self.profile.as_ref()?;
         let keyboards = p.keyboards.as_ref()?.as_object()?;
@@ -462,7 +505,9 @@ impl DeviceDetail {
                 let css = format!(
                     "{} {}",
                     key.get("css").and_then(|v| v.as_str()).unwrap_or_default(),
-                    key.get("extraCss").and_then(|v| v.as_str()).unwrap_or_default(),
+                    key.get("extraCss")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
                 );
                 let span = css_span(&css, width);
                 let color = key.get("color");
@@ -483,6 +528,20 @@ impl DeviceDetail {
                     color: [channel("red"), channel("green"), channel("blue")],
                     index: ki as i32,
                     row: ri as i32,
+                    action_type: key.get("actionType").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                    action_command: key
+                        .get("actionCommand")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u16,
+                    action_hold: key
+                        .get("actionHold")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    default: key.get("default").and_then(|v| v.as_bool()).unwrap_or(true),
+                    retain_original: key
+                        .get("retainOriginal")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 });
             }
             if !row_caps.is_empty() {
@@ -715,6 +774,18 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .unwrap_or(polling_rates[0].0);
         let cluster = detail.as_ref().map(DeviceDetail::cluster).unwrap_or(false);
         let keyboard = detail.as_ref().and_then(DeviceDetail::keyboard_layout);
+        let keyboard_profiles = detail
+            .as_ref()
+            .map(DeviceDetail::keyboard_profiles)
+            .unwrap_or_default();
+        let active_keyboard_profile = detail
+            .as_ref()
+            .and_then(DeviceDetail::active_keyboard_profile)
+            .unwrap_or_default();
+        let assignment_types = detail
+            .as_ref()
+            .map(DeviceDetail::assignment_types)
+            .unwrap_or_default();
 
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
@@ -741,6 +812,9 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             active_polling,
             cluster,
             keyboard,
+            keyboard_profiles,
+            active_keyboard_profile,
+            assignment_types,
         });
     }
 
@@ -1019,6 +1093,73 @@ pub fn remove_dashboard_device(serial: &str) -> Result<(), String> {
         "DELETE",
         &format!("{BASE}/api/dashboard/devices/delete"),
         &serde_json::json!({ "deviceId": serial }),
+    )
+}
+
+/// Update a key assignment.
+pub fn update_key_assignment(
+    serial: &str,
+    key_index: i32,
+    enabled: bool,
+    press_and_hold: bool,
+    type_code: i32,
+    value: Option<i64>,
+    value_string: Option<&str>,
+    toggle_delay: u16,
+) -> Result<(), String> {
+    let mut payload = serde_json::json!({
+        "deviceId": serial,
+        "keyIndex": key_index,
+        "enabled": enabled,
+        "pressAndHold": press_and_hold,
+        "keyAssignmentType": type_code,
+        "toggleDelay": toggle_delay,
+    });
+    if let Some(text) = value_string {
+        payload["keyAssignmentValueString"] = serde_json::Value::String(text.to_string());
+    } else if let Some(number) = value {
+        payload["keyAssignmentValue"] = serde_json::Value::Number(number.into());
+    }
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/updateKeyAssignment"),
+        &payload,
+    )
+}
+
+/// Switch the active keyboard layout profile.
+pub fn change_keyboard_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/profile/change"),
+        &serde_json::json!({ "deviceId": serial, "keyboardProfileName": name }),
+    )
+}
+
+/// Save the current keyboard layout profile.
+pub fn save_keyboard_profile(serial: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/profile/save"),
+        &serde_json::json!({ "deviceId": serial, "keyboardProfileName": "0", "new": false }),
+    )
+}
+
+/// Save the current keyboard layout as a new profile.
+pub fn new_keyboard_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "PUT",
+        &format!("{BASE}/api/keyboard/profile/new"),
+        &serde_json::json!({ "deviceId": serial, "keyboardProfileName": name, "new": true }),
+    )
+}
+
+/// Delete a keyboard layout profile.
+pub fn delete_keyboard_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "DELETE",
+        &format!("{BASE}/api/keyboard/profile/delete"),
+        &serde_json::json!({ "deviceId": serial, "keyboardProfileName": name }),
     )
 }
 

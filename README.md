@@ -48,8 +48,10 @@ RGB profile/effect, keyboard layout, polling rate and RGB cluster are applied
 through the API. For keyboards, the device page renders the live key layout
 (`DeviceProfile.Keyboards`) with per-key colours and selection, plus a toolbar
 for applying a colour to the current key, row or whole keyboard
-(`/api/keyboard/color`). All selects are real dropdowns. Colour swatches and
-effect speed remain preview-only, and key-assignment editing is not wired yet.
+(`/api/keyboard/color`), plus keyboard profile switch/save/save-as/delete and a
+basic key-assignment editor (`/api/keyboard/updateKeyAssignment`). All selects
+are real dropdowns. Colour swatches and effect speed remain preview-only;
+key-assignment modifiers and layers are not wired yet.
 
 Devices can be added to or removed from the dashboard from the dashboard's add
 tile or the device page. Dashboard cards can be reordered by dragging their grip
