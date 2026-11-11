@@ -200,7 +200,7 @@ pub struct MonitorStatus {
 pub struct KeyCap {
     pub name: String,
     pub sub: String,
-    pub width: f32,
+    pub span: f32,
     pub color: [u8; 3],
     pub index: i32,
     #[allow(dead_code)]
@@ -459,6 +459,12 @@ impl DeviceDetail {
                     continue;
                 }
                 let width = key.get("width").and_then(|v| v.as_u64()).unwrap_or(70) as f32 / 70.0;
+                let css = format!(
+                    "{} {}",
+                    key.get("css").and_then(|v| v.as_str()).unwrap_or_default(),
+                    key.get("extraCss").and_then(|v| v.as_str()).unwrap_or_default(),
+                );
+                let span = css_span(&css, width);
                 let color = key.get("color");
                 let channel = |name: &str| {
                     color
@@ -473,7 +479,7 @@ impl DeviceDetail {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string(),
-                    width: width.max(1.0),
+                    span,
                     color: [channel("red"), channel("green"), channel("blue")],
                     index: ki as i32,
                     row: ri as i32,
@@ -504,6 +510,21 @@ struct StringData {
 struct BatteryEnvelope {
     #[serde(default)]
     data: HashMap<String, BatteryStat>,
+}
+
+/// Key width in grid columns: CSS `wide` classes win, `width` is a fallback.
+fn css_span(css: &str, width_units: f32) -> f32 {
+    for token in css.split_whitespace() {
+        if let Some(rest) = token.strip_prefix("wide") {
+            if rest.is_empty() {
+                return 2.0;
+            }
+            if let Ok(n) = rest.parse::<f32>() {
+                return n.max(1.0);
+            }
+        }
+    }
+    width_units.round().max(1.0)
 }
 
 fn fetch_device_detail(serial: &str) -> Result<DeviceDetail, String> {
@@ -1456,6 +1477,6 @@ mod keyboard_tests {
         assert_eq!(layout.rows[0].keys.len(), 2);
         assert_eq!(layout.rows[0].keys[0].name, "ESC");
         assert_eq!(layout.rows[0].keys[0].color, [0, 255, 0]);
-        assert!((layout.rows[1].keys[0].width - 520.0 / 70.0).abs() < 0.01);
+        assert_eq!(layout.rows[1].keys[0].span, 7.0);
     }
 }

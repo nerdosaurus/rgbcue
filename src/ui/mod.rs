@@ -1721,24 +1721,28 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
         let Some(layout) = d.keyboard.clone() else {
             return;
         };
-        let max_units = layout
+        let columns = layout
             .rows
             .iter()
-            .map(|row| row.keys.iter().map(|key| key.width).sum::<f32>())
-            .fold(0.0_f32, f32::max);
+            .map(|row| row.keys.iter().map(|key| key.span).sum::<f32>())
+            .fold(0.0_f32, f32::max)
+            .max(1.0);
         let avail = ui.available_width();
         let gap = 3.0;
         // Natural size: grow to a comfortable cap, shrink only if the card is narrow.
-        let unit_w = ((avail - gap * 16.0) / max_units.max(1.0)).min(38.0).max(10.0);
+        let unit_w = ((avail - gap * (columns - 1.0)) / columns)
+            .min(38.0)
+            .max(10.0);
         let key_h = (unit_w * 0.9).clamp(20.0, 36.0);
         let mut clicked = None;
 
         for (ri, row) in layout.rows.iter().enumerate() {
             let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail, key_h), Sense::hover());
-            let mut x = row_rect.left();
+            let mut col = 0.0_f32;
 
             for key in &row.keys {
-                let w = key.width * unit_w;
+                let w = key.span * unit_w + (key.span - 1.0) * gap;
+                let x = row_rect.left() + col * (unit_w + gap);
                 let rect = Rect::from_min_size(egui::pos2(x, row_rect.top()), Vec2::new(w, key_h));
                 let id = ui.scope_id().with(("keycap", ri, key.index));
                 let resp = ui.interact(rect, id, Sense::click());
@@ -1795,7 +1799,7 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                 if resp.clicked() {
                     clicked = Some(key.index);
                 }
-                x += w + gap;
+                col += key.span;
             }
             ui.add_space(gap);
         }
