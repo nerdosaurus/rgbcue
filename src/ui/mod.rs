@@ -1728,15 +1728,14 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
             .fold(0.0_f32, f32::max);
         let avail = ui.available_width();
         let gap = 3.0;
-        let unit_w = ((avail - gap * 16.0) / max_units.max(1.0)).clamp(10.0, 40.0);
+        // Natural size: grow to a comfortable cap, shrink only if the card is narrow.
+        let unit_w = ((avail - gap * 16.0) / max_units.max(1.0)).min(38.0).max(10.0);
         let key_h = (unit_w * 0.9).clamp(20.0, 36.0);
         let mut clicked = None;
 
         for (ri, row) in layout.rows.iter().enumerate() {
-            let total = row.keys.iter().map(|key| key.width * unit_w).sum::<f32>()
-                + gap * row.keys.len().saturating_sub(1) as f32;
             let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail, key_h), Sense::hover());
-            let mut x = row_rect.left() + (avail - total) / 2.0;
+            let mut x = row_rect.left();
 
             for key in &row.keys {
                 let w = key.width * unit_w;
