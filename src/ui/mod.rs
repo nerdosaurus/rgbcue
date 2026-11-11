@@ -1686,17 +1686,35 @@ fn add_card(ui: &mut Ui, width: f32, names: &[String], choice: &mut usize) -> bo
 
 fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<DeviceAction> {
     let mut action = None;
+    let Some(layout) = d.keyboard.clone() else {
+        return None;
+    };
+    let selected_name = d.selected_key.and_then(|index| {
+        layout
+            .rows
+            .iter()
+            .flat_map(|row| row.keys.iter())
+            .find(|key| key.index == index)
+            .map(|key| key.name.clone())
+    });
+
+    let gap = 3.0;
+    let columns = layout
+        .rows
+        .iter()
+        .map(|row| row.keys.iter().map(|key| key.span).sum::<f32>())
+        .fold(0.0_f32, f32::max)
+        .max(1.0);
+    let avail = ui.available_width();
+    // Natural size: cap the unit, shrink only if the card column is narrower.
+    let unit_w = ((avail - 32.0 - gap * (columns - 1.0)) / columns)
+        .min(38.0)
+        .max(10.0);
+    let kb_w = columns * unit_w + (columns - 1.0) * gap;
+    let key_h = (unit_w * 0.9).clamp(20.0, 36.0);
+
     t::card_padded(16).show(ui, |ui| {
-        let selected_name = d.selected_key.and_then(|index| {
-            d.keyboard.as_ref().and_then(|layout| {
-                layout
-                    .rows
-                    .iter()
-                    .flat_map(|row| row.keys.iter())
-                    .find(|key| key.index == index)
-                    .map(|key| key.name.clone())
-            })
-        });
+        ui.set_width(kb_w);
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -1718,26 +1736,10 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
         });
 
         ui.add_space(12.0);
-        let Some(layout) = d.keyboard.clone() else {
-            return;
-        };
-        let columns = layout
-            .rows
-            .iter()
-            .map(|row| row.keys.iter().map(|key| key.span).sum::<f32>())
-            .fold(0.0_f32, f32::max)
-            .max(1.0);
-        let avail = ui.available_width();
-        let gap = 3.0;
-        // Natural size: grow to a comfortable cap, shrink only if the card is narrow.
-        let unit_w = ((avail - gap * (columns - 1.0)) / columns)
-            .min(38.0)
-            .max(10.0);
-        let key_h = (unit_w * 0.9).clamp(20.0, 36.0);
         let mut clicked = None;
 
         for (ri, row) in layout.rows.iter().enumerate() {
-            let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail, key_h), Sense::hover());
+            let (row_rect, _) = ui.allocate_exact_size(Vec2::new(kb_w, key_h), Sense::hover());
             let mut col = 0.0_f32;
 
             for key in &row.keys {
@@ -1814,13 +1816,12 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
 
         let scopes: Vec<String> = KEY_SCOPES.iter().map(|s| s.to_string()).collect();
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 6.0);
             for swatch in SWATCHES {
                 if t::swatch(ui, *swatch, *color == *swatch) {
                     *color = *swatch;
                 }
             }
-            ui.add_space(6.0);
             t::select_strings(ui, &scopes, &mut d.key_scope);
             let can_apply = d.selected_key.is_some() || d.key_scope == 2;
             if t::button(
