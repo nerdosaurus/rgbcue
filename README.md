@@ -51,7 +51,8 @@ for applying a colour to the current key, row or whole keyboard
 (`/api/keyboard/color`), plus keyboard profile switch/save/save-as/delete and a
 basic key-assignment editor (`/api/keyboard/updateKeyAssignment`). All selects
 are real dropdowns. Colour swatches and effect speed remain preview-only;
-key-assignment modifiers and layers are not wired yet.
+key-assignment modifiers, toggle delay and retain-original are included; layers
+are not wired yet.
 
 Devices can be added to or removed from the dashboard from the dashboard's add
 tile or the device page. Dashboard cards can be reordered by dragging their grip

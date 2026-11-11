@@ -174,6 +174,10 @@ struct AssignmentEditor {
     custom_value: String,
     default: bool,
     hold: bool,
+    modifiers: Vec<(i32, String)>,
+    modifier_idx: usize,
+    retain_original: bool,
+    toggle_delay: String,
 }
 
 enum DeviceAction {
@@ -558,6 +562,11 @@ impl PreviewApp {
             .iter()
             .position(|(value, _)| *value == current)
             .unwrap_or(0);
+        let modifiers = api::fetch_key_assignment_modifiers(&d.serial);
+        let modifier_idx = modifiers
+            .iter()
+            .position(|(code, _)| *code == key.modifier_key)
+            .unwrap_or(0);
         self.assignment_editor = Some(AssignmentEditor {
             serial: d.serial.clone(),
             key_index,
@@ -569,6 +578,10 @@ impl PreviewApp {
             custom_value: current,
             default: key.default,
             hold: key.action_hold,
+            modifiers,
+            modifier_idx,
+            retain_original: key.retain_original,
+            toggle_delay: key.toggle_delay.to_string(),
         });
     }
 
@@ -659,6 +672,17 @@ impl PreviewApp {
                     t::select_strings(ui, &value_labels, &mut editor.value_idx);
                 }
 
+                if !editor.modifiers.is_empty() {
+                    ui.add_space(8.0);
+                    t::section_label(ui, "Modifier");
+                    let labels: Vec<String> = editor
+                        .modifiers
+                        .iter()
+                        .map(|(_, name)| name.clone())
+                        .collect();
+                    t::select_strings(ui, &labels, &mut editor.modifier_idx);
+                }
+
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Use default").size(11.5).color(t::MUTED));
@@ -666,6 +690,18 @@ impl PreviewApp {
                     ui.add_space(12.0);
                     ui.label(RichText::new("Press and hold").size(11.5).color(t::MUTED));
                     t::switch(ui, &mut editor.hold);
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Retain original").size(11.5).color(t::MUTED));
+                    t::switch(ui, &mut editor.retain_original);
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("Toggle delay").size(11.5).color(t::MUTED));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut editor.toggle_delay)
+                            .desired_width(70.0)
+                            .text_color(t::TEXT),
+                    );
                 });
 
                 ui.add_space(14.0);
@@ -688,6 +724,12 @@ impl PreviewApp {
             } else {
                 editor.values[editor.value_idx].0.clone()
             };
+            let modifier = editor
+                .modifiers
+                .get(editor.modifier_idx)
+                .map(|(code, _)| *code)
+                .unwrap_or(0);
+            let toggle_delay = editor.toggle_delay.parse::<u16>().unwrap_or(0);
             let (value, value_string) = if raw.is_empty() {
                 (None, None)
             } else if string_type {
@@ -703,7 +745,9 @@ impl PreviewApp {
                 type_code,
                 value,
                 value_string.as_deref(),
-                0,
+                modifier,
+                editor.retain_original,
+                toggle_delay,
             ) {
                 Ok(()) => {
                     self.notice = Some(("Key assignment updated".into(), true));
@@ -1977,6 +2021,7 @@ fn assignment_values(type_code: i32, profiles: &[String]) -> Vec<(String, String
     match type_code {
         1 => pairs(api::fetch_media_keys().unwrap_or_default()),
         3 => pairs(api::fetch_keyboard_keys().unwrap_or_default()),
+        2 | 4 | 8 => api::fetch_mouse_devices(),
         9 => pairs(api::fetch_mouse_buttons().unwrap_or_default()),
         10 => api::fetch_macros()
             .unwrap_or_default()

@@ -211,6 +211,8 @@ pub struct KeyCap {
     pub default: bool,
     #[allow(dead_code)]
     pub retain_original: bool,
+    pub modifier_key: i32,
+    pub toggle_delay: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -542,6 +544,10 @@ impl DeviceDetail {
                         .get("retainOriginal")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
+                    modifier_key: key.get("modifierKey").and_then(|v| v.as_i64()).unwrap_or(0)
+                        as i32,
+                    toggle_delay: key.get("toggleDelay").and_then(|v| v.as_u64()).unwrap_or(0)
+                        as u16,
                 });
             }
             if !row_caps.is_empty() {
@@ -1105,6 +1111,8 @@ pub fn update_key_assignment(
     type_code: i32,
     value: Option<i64>,
     value_string: Option<&str>,
+    modifier: i32,
+    retain_original: bool,
     toggle_delay: u16,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
@@ -1113,6 +1121,8 @@ pub fn update_key_assignment(
         "enabled": enabled,
         "pressAndHold": press_and_hold,
         "keyAssignmentType": type_code,
+        "keyAssignmentModifier": modifier,
+        "keyAssignmentOriginal": retain_original,
         "toggleDelay": toggle_delay,
     });
     if let Some(text) = value_string {
@@ -1440,6 +1450,46 @@ struct InputListResponse {
     #[allow(dead_code)]
     status: i32,
     data: Option<std::collections::HashMap<u16, InputKey>>,
+}
+
+pub fn fetch_key_assignment_modifiers(serial: &str) -> Vec<(i32, String)> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        data: std::collections::HashMap<String, String>,
+    }
+    let Ok(body) = get(&format!(
+        "{BASE}/api/keyboard/assignmentsModifiers/{serial}"
+    )) else {
+        return Vec::new();
+    };
+    let Ok(envelope) = serde_json::from_str::<Envelope>(&body) else {
+        return Vec::new();
+    };
+    let mut items: Vec<(i32, String)> = envelope
+        .data
+        .into_iter()
+        .filter_map(|(k, v)| k.parse::<i32>().ok().map(|n| (n, v)))
+        .collect();
+    items.sort_by_key(|(n, _)| *n);
+    items
+}
+
+pub fn fetch_mouse_devices() -> Vec<(String, String)> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        data: std::collections::HashMap<String, String>,
+    }
+    let Ok(body) = get(&format!("{BASE}/api/devices/mouse")) else {
+        return Vec::new();
+    };
+    let Ok(envelope) = serde_json::from_str::<Envelope>(&body) else {
+        return Vec::new();
+    };
+    let mut items: Vec<(String, String)> = envelope.data.into_iter().collect();
+    items.sort_by(|a, b| a.1.cmp(&b.1));
+    items
 }
 
 fn fetch_input_map(path: &str) -> Result<Vec<(u16, InputKey)>, String> {
