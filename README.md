@@ -10,9 +10,9 @@ first.
 
 ### Artwork
 
-The Scimitar line drawings in `assets/scimitar_wireless/` are original project
-artwork and are compiled into the binary: `top.png` for the dashboard card and
-`side.png` for the mouse device page.
+The Scimitar (wireless and wired) and Darkstar line drawings under `assets/`
+are original project artwork and are compiled into the binary: the side view
+for the dashboard card, and body/button layers on the mouse device page.
 
 Artwork extracted from Corsair's iCUE `.rcc` files is proprietary and stays
 outside the repo. Devices without bundled art use the drawn icons.
