@@ -34,7 +34,15 @@ const EFFECTS: &[&str] = &[
 const LAYOUTS: &[&str] = &["US", "UK", "DE", "Nordic"];
 const POLLING: &[&str] = &["125 Hz", "250 Hz", "500 Hz", "1000 Hz"];
 const THEMES: &[&str] = &["Default", "Midnight", "Nord"];
-const LANGUAGES: &[&str] = &["English", "Deutsch", "Français", "Hrvatski"];
+const LANGUAGE_CODES: &[(&str, &str)] = &[
+    ("en_US", "English (US)"),
+    ("de_DE", "Deutsch"),
+    ("fr_FR", "Français"),
+    ("hr_HR", "Hrvatski"),
+    ("pt_BR", "Português (BR)"),
+    ("ru_RU", "Русский"),
+    ("se_SE", "Svenska"),
+];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
 const SWATCHES: &[[u8; 3]] = &[
     [255, 255, 255],
@@ -361,10 +369,19 @@ struct PreviewApp {
     text_delay: i32,
     text_variance: i32,
     delay_variance: i32,
+    settings_loaded: bool,
+    show_labels: bool,
+    temperature_bar: bool,
+    add_device_to_dashboard: bool,
+    rgb_off: bool,
+    settings_themes: Vec<String>,
+    keyboard_layout: usize,
+    keyboard_layouts: Vec<(i64, String)>,
+    global_rgb: usize,
+    global_color: [u8; 3],
     theme_idx: usize,
     lang_idx: usize,
     celsius: bool,
-    autostart: bool,
     dash_rx: mpsc::Receiver<DashMsg>,
     refresh_tx: mpsc::Sender<()>,
     live: bool,
@@ -410,10 +427,19 @@ impl PreviewApp {
             text_delay: 40,
             text_variance: 0,
             delay_variance: 0,
+            settings_loaded: false,
+            show_labels: true,
+            temperature_bar: true,
+            add_device_to_dashboard: true,
+            rgb_off: false,
+            settings_themes: THEMES.iter().map(|s| s.to_string()).collect(),
+            keyboard_layout: 0,
+            keyboard_layouts: vec![(0, "QWERTY".into()), (1, "AZERTY".into())],
+            global_rgb: 0,
+            global_color: [255, 0, 0],
             theme_idx: 0,
             lang_idx: 0,
             celsius: true,
-            autostart: true,
             dash_rx,
             refresh_tx,
             live: false,
@@ -1653,6 +1679,7 @@ impl PreviewApp {
                 if self.collapsed {
                     if menu_button(ui) {
                         self.collapsed = false;
+                        let _ = api::set_sidebar_collapsed(false);
                     }
                 } else {
                     ui.horizontal(|ui| {
@@ -1666,6 +1693,7 @@ impl PreviewApp {
                         ui.add_space((ui.available_width() - 26.0).max(0.0));
                         if menu_button(ui) {
                             self.collapsed = true;
+                            let _ = api::set_sidebar_collapsed(true);
                         }
                     });
                 }
@@ -1869,6 +1897,7 @@ impl PreviewApp {
                 if t::button(ui, "Refresh", t::Btn::Ghost) {
                     let _ = self.refresh_tx.send(());
                     self.macro_dirty = true;
+                    self.settings_loaded = false;
                 }
             });
         });
@@ -2861,7 +2890,68 @@ impl PreviewApp {
         }
     }
 
+    fn ensure_settings(&mut self) {
+        if self.settings_loaded {
+            return;
+        }
+        self.settings_loaded = true;
+        match api::fetch_dashboard_settings() {
+            Ok(s) => {
+                self.celsius = s.celsius;
+                self.temperature_bar = s.temperature_bar;
+                self.add_device_to_dashboard = s.add_device_to_dashboard;
+                self.show_labels = s.show_labels;
+                self.rgb_off = s.rgb_off;
+                self.collapsed = s.sidebar_collapsed;
+                if !s.themes.is_empty() {
+                    self.settings_themes = s.themes;
+                }
+                self.theme_idx = self
+                    .settings_themes
+                    .iter()
+                    .position(|t| *t == s.theme)
+                    .unwrap_or(0);
+                self.lang_idx = LANGUAGE_CODES
+                    .iter()
+                    .position(|(code, _)| *code == s.language_code)
+                    .unwrap_or(0);
+                if !s.keyboard_layouts.is_empty() {
+                    self.keyboard_layouts = s.keyboard_layouts;
+                }
+                self.keyboard_layout = self
+                    .keyboard_layouts
+                    .iter()
+                    .position(|(code, _)| *code == s.keyboard_layout)
+                    .unwrap_or(0);
+            }
+            Err(err) => self.notice = Some((err, false)),
+        }
+    }
+
     fn settings_page(&mut self, ui: &mut Ui) {
+        self.ensure_settings();
+
+        let mut save = false;
+        let mut apply_all = false;
+        let mut global_changed: Option<String> = None;
+
+        let language_names: Vec<String> = LANGUAGE_CODES
+            .iter()
+            .map(|(_, name)| name.to_string())
+            .collect();
+        let theme_names = self.settings_themes.clone();
+        let layout_names: Vec<String> = self
+            .keyboard_layouts
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect();
+        let rgb_modes = self
+            .devices
+            .first()
+            .map(|d| d.rgb_modes.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| EFFECTS.iter().map(|s| s.to_string()).collect());
+
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width().min(760.0), 10.0),
             Layout::top_down(Align::Min),
@@ -2870,10 +2960,6 @@ impl PreviewApp {
                 t::card_padded(16).show(ui, |ui| {
                     t::section_label(ui, "Dashboard");
                     ui.add_space(8.0);
-                    t::settings_row(ui, "Theme", |ui| t::select(ui, THEMES, &mut self.theme_idx));
-                    t::settings_row(ui, "Language", |ui| {
-                        t::select(ui, LANGUAGES, &mut self.lang_idx)
-                    });
                     t::settings_row(ui, "Temperature unit", |ui| {
                         let changed = t::switch(ui, &mut self.celsius);
                         ui.add_space(6.0);
@@ -2888,12 +2974,61 @@ impl PreviewApp {
                         );
                         changed
                     });
-                    t::settings_row(ui, "Start with system", |ui| {
-                        t::switch(ui, &mut self.autostart)
+                    t::settings_row(ui, "Temperature bar", |ui| {
+                        t::switch(ui, &mut self.temperature_bar)
                     });
+                    t::settings_row(ui, "Device labels", |ui| {
+                        t::switch(ui, &mut self.show_labels)
+                    });
+                    t::settings_row(ui, "Add device to dashboard", |ui| {
+                        t::switch(ui, &mut self.add_device_to_dashboard)
+                    });
+                    t::settings_row(ui, "Language", |ui| {
+                        t::select_strings(ui, &language_names, &mut self.lang_idx)
+                    });
+                    t::settings_row(ui, "Theme", |ui| {
+                        t::select_strings(ui, &theme_names, &mut self.theme_idx)
+                    });
+                    t::settings_row(ui, "Keyboard layout", |ui| {
+                        t::select_strings(ui, &layout_names, &mut self.keyboard_layout)
+                    });
+                    t::settings_row(ui, "Turn off RGB", |ui| t::switch(ui, &mut self.rgb_off));
                     t::settings_row(ui, "Collapse sidebar", |ui| {
                         t::switch(ui, &mut self.collapsed)
                     });
+                    ui.add_space(10.0);
+                    if t::button(ui, "Save settings", t::Btn::Success) {
+                        save = true;
+                    }
+                });
+
+                ui.add_space(16.0);
+                t::card_padded(16).show(ui, |ui| {
+                    t::section_label(ui, "Global RGB");
+                    ui.add_space(8.0);
+                    t::settings_row(ui, "RGB profile", |ui| {
+                        let changed = t::select_strings(ui, &rgb_modes, &mut self.global_rgb);
+                        if changed {
+                            global_changed = rgb_modes.get(self.global_rgb).cloned();
+                        }
+                        changed
+                    });
+                    t::settings_row(ui, "Apply to all", |ui| {
+                        egui::color_picker::color_edit_button_srgb(ui, &mut self.global_color);
+                        ui.add_space(6.0);
+                        let clicked = t::button(ui, "Apply", t::Btn::Success);
+                        if clicked {
+                            apply_all = true;
+                        }
+                        clicked
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("A profile or solid colour is applied to every device.")
+                            .size(10.5)
+                            .italics()
+                            .color(t::DIM),
+                    );
                 });
 
                 ui.add_space(16.0);
@@ -2906,6 +3041,53 @@ impl PreviewApp {
                 });
             },
         );
+
+        if save {
+            let settings = api::DashboardSettings {
+                celsius: self.celsius,
+                temperature_bar: self.temperature_bar,
+                add_device_to_dashboard: self.add_device_to_dashboard,
+                show_labels: self.show_labels,
+                rgb_off: self.rgb_off,
+                language_code: LANGUAGE_CODES[self.lang_idx].0.to_string(),
+                theme: self
+                    .settings_themes
+                    .get(self.theme_idx)
+                    .cloned()
+                    .unwrap_or_default(),
+                themes: self.settings_themes.clone(),
+                keyboard_layout: self
+                    .keyboard_layouts
+                    .get(self.keyboard_layout)
+                    .map(|(code, _)| *code)
+                    .unwrap_or(0),
+                keyboard_layouts: self.keyboard_layouts.clone(),
+                sidebar_collapsed: self.collapsed,
+            };
+            let mut result = api::save_dashboard_settings(&settings);
+            if result.is_ok() {
+                result = api::set_sidebar_collapsed(self.collapsed);
+            }
+            match result {
+                Ok(()) => {
+                    self.notice = Some(("Settings saved".into(), true));
+                    let _ = self.refresh_tx.send(());
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some(profile) = global_changed {
+            match api::set_global_rgb(&profile) {
+                Ok(()) => self.notice = Some(("Global RGB applied".into(), true)),
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if apply_all {
+            match api::set_all_devices_color(self.global_color) {
+                Ok(()) => self.notice = Some(("Colour applied to all devices".into(), true)),
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
     }
 
     // ---- empty state -------------------------------------------------------

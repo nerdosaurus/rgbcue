@@ -341,6 +341,22 @@ pub struct Dashboard {
     pub monitors: Vec<MonitorStatus>,
 }
 
+/// OpenLinkHub's global dashboard settings.
+#[derive(Debug, Clone, Default)]
+pub struct DashboardSettings {
+    pub celsius: bool,
+    pub temperature_bar: bool,
+    pub add_device_to_dashboard: bool,
+    pub show_labels: bool,
+    pub rgb_off: bool,
+    pub language_code: String,
+    pub theme: String,
+    pub themes: Vec<String>,
+    pub keyboard_layout: i64,
+    pub keyboard_layouts: Vec<(i64, String)>,
+    pub sidebar_collapsed: bool,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct DeviceDetail {
     #[serde(default)]
@@ -1433,6 +1449,127 @@ pub fn remove_dashboard_device(serial: &str) -> Result<(), String> {
         "DELETE",
         &format!("{BASE}/api/dashboard/devices/delete"),
         &serde_json::json!({ "deviceId": serial }),
+    )
+}
+
+/// Read the global dashboard settings.
+pub fn fetch_dashboard_settings() -> Result<DashboardSettings, String> {
+    #[derive(serde::Deserialize, Default)]
+    struct Json {
+        #[serde(default)]
+        celsius: bool,
+        #[serde(default, rename = "temperatureBar")]
+        temperature_bar: bool,
+        #[serde(default, rename = "addDeviceToDashboard")]
+        add_device_to_dashboard: bool,
+        #[serde(default, rename = "showLabels")]
+        show_labels: bool,
+        #[serde(default, rename = "rgbOff")]
+        rgb_off: bool,
+        #[serde(default, rename = "languageCode")]
+        language_code: String,
+        #[serde(default)]
+        theme: String,
+        #[serde(default)]
+        themes: Vec<String>,
+        #[serde(default, rename = "keyboardLayout")]
+        keyboard_layout: i64,
+        #[serde(default, rename = "keyboardLayouts")]
+        keyboard_layouts: std::collections::HashMap<String, String>,
+        #[serde(default, rename = "sidebarCollapsed")]
+        sidebar_collapsed: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Response {
+        status: i32,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        dashboard: Option<Json>,
+    }
+
+    let body = get(&format!("{BASE}/api/dashboard"))?;
+    let resp: Response = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    if resp.status != 1 {
+        return Err(if resp.message.is_empty() {
+            "Unable to read dashboard settings".to_string()
+        } else {
+            resp.message
+        });
+    }
+    let json = resp
+        .dashboard
+        .ok_or_else(|| "No dashboard settings returned".to_string())?;
+    let mut keyboard_layouts: Vec<(i64, String)> = json
+        .keyboard_layouts
+        .into_iter()
+        .filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v)))
+        .collect();
+    keyboard_layouts.sort_by_key(|(n, _)| *n);
+    Ok(DashboardSettings {
+        celsius: json.celsius,
+        temperature_bar: json.temperature_bar,
+        add_device_to_dashboard: json.add_device_to_dashboard,
+        show_labels: json.show_labels,
+        rgb_off: json.rgb_off,
+        language_code: json.language_code,
+        theme: json.theme,
+        themes: json.themes,
+        keyboard_layout: json.keyboard_layout,
+        keyboard_layouts,
+        sidebar_collapsed: json.sidebar_collapsed,
+    })
+}
+
+/// Save the global dashboard settings.
+pub fn save_dashboard_settings(settings: &DashboardSettings) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/dashboard/update"),
+        &serde_json::json!({
+            "celsius": settings.celsius,
+            "temperatureBar": settings.temperature_bar,
+            "addDeviceToDashboard": settings.add_device_to_dashboard,
+            "languageCode": settings.language_code,
+            "showLabels": settings.show_labels,
+            "theme": settings.theme,
+            "keyboardLayout": settings.keyboard_layout,
+            "rgbOff": settings.rgb_off,
+        }),
+    )
+}
+
+/// Persist the sidebar collapsed state.
+pub fn set_sidebar_collapsed(collapsed: bool) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/dashboard/sidebar"),
+        &serde_json::json!({ "sidebarCollapsed": collapsed }),
+    )
+}
+
+/// Apply an RGB profile to every device.
+pub fn set_global_rgb(profile: &str) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/color/global"),
+        &serde_json::json!({ "profile": profile }),
+    )
+}
+
+/// Apply a solid colour to every device.
+pub fn set_all_devices_color(color: [u8; 3]) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/color/all"),
+        &serde_json::json!({
+            "color": {
+                "red": color[0],
+                "green": color[1],
+                "blue": color[2],
+                "brightness": 1
+            }
+        }),
     )
 }
 
