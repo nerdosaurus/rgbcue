@@ -129,6 +129,14 @@ struct Device {
     max_dpi: u16,
     zones: Vec<api::ZoneColor>,
     mouse_buttons: Vec<api::MouseButton>,
+    sleep_modes: Vec<(i64, String)>,
+    sleep: usize,
+    angle_snapping: bool,
+    button_optimization: bool,
+    lift_heights: Vec<(i64, String)>,
+    lift: usize,
+    open_rgb: bool,
+    wireless: bool,
     stat: (String, String),
 }
 
@@ -207,6 +215,11 @@ enum DeviceAction {
     SaveDpiColors(Vec<[u8; 3]>),
     SaveZoneColors(Vec<[u8; 3]>),
     EditAssignment(i32),
+    Sleep(i64),
+    AngleSnapping(bool),
+    ButtonOptimization(bool),
+    LiftHeight(i64),
+    OpenRgb(bool),
     Assignments,
     Add,
     Remove,
@@ -374,6 +387,14 @@ impl PreviewApp {
                     max_dpi: 18000,
                     zones: Vec::new(),
                     mouse_buttons: Vec::new(),
+                    sleep_modes: Vec::new(),
+                    sleep: 0,
+                    angle_snapping: false,
+                    button_optimization: false,
+                    lift_heights: Vec::new(),
+                    lift: 0,
+                    open_rgb: false,
+                    wireless: false,
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -406,6 +427,14 @@ impl PreviewApp {
                     max_dpi: 18000,
                     zones: Vec::new(),
                     mouse_buttons: Vec::new(),
+                    sleep_modes: Vec::new(),
+                    sleep: 0,
+                    angle_snapping: false,
+                    button_optimization: false,
+                    lift_heights: Vec::new(),
+                    lift: 0,
+                    open_rgb: false,
+                    wireless: false,
                     stat: ("18000".into(), "DPI".into()),
                 },
                 Device {
@@ -438,6 +467,14 @@ impl PreviewApp {
                     max_dpi: 18000,
                     zones: Vec::new(),
                     mouse_buttons: Vec::new(),
+                    sleep_modes: Vec::new(),
+                    sleep: 0,
+                    angle_snapping: false,
+                    button_optimization: false,
+                    lift_heights: Vec::new(),
+                    lift: 0,
+                    open_rgb: false,
+                    wireless: false,
                     stat: ("1600".into(), "DPI".into()),
                 },
                 Device {
@@ -470,6 +507,14 @@ impl PreviewApp {
                     max_dpi: 18000,
                     zones: Vec::new(),
                     mouse_buttons: Vec::new(),
+                    sleep_modes: Vec::new(),
+                    sleep: 0,
+                    angle_snapping: false,
+                    button_optimization: false,
+                    lift_heights: Vec::new(),
+                    lift: 0,
+                    open_rgb: false,
+                    wireless: false,
                     stat: ("1240".into(), "Fan RPM".into()),
                 },
                 Device {
@@ -502,6 +547,14 @@ impl PreviewApp {
                     max_dpi: 18000,
                     zones: Vec::new(),
                     mouse_buttons: Vec::new(),
+                    sleep_modes: Vec::new(),
+                    sleep: 0,
+                    angle_snapping: false,
+                    button_optimization: false,
+                    lift_heights: Vec::new(),
+                    lift: 0,
+                    open_rgb: false,
+                    wireless: false,
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
@@ -537,6 +590,11 @@ impl PreviewApp {
             DeviceAction::SaveDpiColors(_) => "DPI colours saved",
             DeviceAction::SaveZoneColors(_) => "Zone colours saved",
             DeviceAction::EditAssignment(_) => "Key assignment",
+            DeviceAction::Sleep(_) => "Sleep timer updated",
+            DeviceAction::AngleSnapping(_) => "Angle snapping updated",
+            DeviceAction::ButtonOptimization(_) => "Button response updated",
+            DeviceAction::LiftHeight(_) => "Lift height updated",
+            DeviceAction::OpenRgb(_) => "OpenRGB integration updated",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -575,6 +633,11 @@ impl PreviewApp {
                 self.open_assignment_editor(idx, key_index);
                 return;
             }
+            DeviceAction::Sleep(minutes) => api::set_mouse_sleep(&d.serial, minutes),
+            DeviceAction::AngleSnapping(on) => api::set_angle_snapping(&d.serial, on),
+            DeviceAction::ButtonOptimization(on) => api::set_button_optimization(&d.serial, on),
+            DeviceAction::LiftHeight(height) => api::set_lift_height(&d.serial, height),
+            DeviceAction::OpenRgb(on) => api::set_open_rgb(&d.serial, on),
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
             DeviceAction::Remove => api::remove_dashboard_device(&d.serial),
         };
@@ -908,6 +971,22 @@ impl PreviewApp {
                 // Assignments are edited in a modal, so the poll cannot clobber
                 // an in-progress edit; keep the list fresh.
                 d.mouse_buttons = s.mouse_buttons.clone();
+                d.sleep_modes = s.sleep_modes;
+                d.sleep = d
+                    .sleep_modes
+                    .iter()
+                    .position(|(n, _)| *n == s.active_sleep)
+                    .unwrap_or(0);
+                d.angle_snapping = s.angle_snapping;
+                d.button_optimization = s.button_optimization;
+                d.lift_heights = s.lift_heights;
+                d.lift = d
+                    .lift_heights
+                    .iter()
+                    .position(|(n, _)| *n == s.active_lift)
+                    .unwrap_or(0);
+                d.open_rgb = s.open_rgb;
+                d.wireless = !s.usb;
                 d.min_dpi = s.min_dpi;
                 d.max_dpi = s.max_dpi;
                 d.stat = (s.stat_value, s.stat_label);
@@ -949,6 +1028,16 @@ impl PreviewApp {
                     .iter()
                     .position(|(n, _)| *n == s.active_polling)
                     .unwrap_or(0);
+                let sleep = s
+                    .sleep_modes
+                    .iter()
+                    .position(|(n, _)| *n == s.active_sleep)
+                    .unwrap_or(0);
+                let lift = s
+                    .lift_heights
+                    .iter()
+                    .position(|(n, _)| *n == s.active_lift)
+                    .unwrap_or(0);
                 next.push(Device {
                     name: s.product,
                     kind,
@@ -983,6 +1072,14 @@ impl PreviewApp {
                     max_dpi: s.max_dpi,
                     zones: s.zones,
                     mouse_buttons: s.mouse_buttons,
+                    sleep_modes: s.sleep_modes,
+                    sleep,
+                    angle_snapping: s.angle_snapping,
+                    button_optimization: s.button_optimization,
+                    lift_heights: s.lift_heights,
+                    lift,
+                    open_rgb: s.open_rgb,
+                    wireless: !s.usb,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -1515,6 +1612,17 @@ impl PreviewApp {
                                 t::button(ui, "Configure", t::Btn::Normal)
                             });
                         }
+                        if d.kind == Kind::Mouse && d.wireless && !d.sleep_modes.is_empty() {
+                            let names: Vec<String> =
+                                d.sleep_modes.iter().map(|(_, n)| n.clone()).collect();
+                            t::settings_row(ui, "Sleep timer", |ui| {
+                                let changed = t::select_strings(ui, &names, &mut d.sleep);
+                                if changed {
+                                    action = Some(DeviceAction::Sleep(d.sleep_modes[d.sleep].0));
+                                }
+                                changed
+                            });
+                        }
                         t::settings_row(ui, "RGB Cluster", |ui| {
                             let changed = t::switch(ui, &mut d.cluster);
                             if changed {
@@ -1522,6 +1630,46 @@ impl PreviewApp {
                             }
                             changed
                         });
+                        if d.kind == Kind::Mouse {
+                            t::settings_row(ui, "OpenRGB", |ui| {
+                                let changed = t::switch(ui, &mut d.open_rgb);
+                                if changed {
+                                    action = Some(DeviceAction::OpenRgb(d.open_rgb));
+                                }
+                                changed
+                            });
+                            t::settings_row(ui, "Angle snapping", |ui| {
+                                let changed = t::switch(ui, &mut d.angle_snapping);
+                                if changed {
+                                    action = Some(DeviceAction::AngleSnapping(d.angle_snapping));
+                                }
+                                changed
+                            });
+                            if d.wireless {
+                                t::settings_row(ui, "Button response", |ui| {
+                                    let changed = t::switch(ui, &mut d.button_optimization);
+                                    if changed {
+                                        action = Some(DeviceAction::ButtonOptimization(
+                                            d.button_optimization,
+                                        ));
+                                    }
+                                    changed
+                                });
+                            }
+                            if !d.lift_heights.is_empty() {
+                                let names: Vec<String> =
+                                    d.lift_heights.iter().map(|(_, n)| n.clone()).collect();
+                                t::settings_row(ui, "Lift height", |ui| {
+                                    let changed = t::select_strings(ui, &names, &mut d.lift);
+                                    if changed {
+                                        action = Some(DeviceAction::LiftHeight(
+                                            d.lift_heights[d.lift].0,
+                                        ));
+                                    }
+                                    changed
+                                });
+                            }
+                        }
 
                         ui.add_space(14.0);
                         let (label, kind) = if on_dashboard {

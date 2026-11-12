@@ -287,6 +287,14 @@ pub struct DeviceStatus {
     pub max_dpi: u16,
     pub zones: Vec<ZoneColor>,
     pub mouse_buttons: Vec<MouseButton>,
+    pub sleep_modes: Vec<(i64, String)>,
+    pub active_sleep: i64,
+    pub angle_snapping: bool,
+    pub button_optimization: bool,
+    pub lift_heights: Vec<(i64, String)>,
+    pub active_lift: i64,
+    pub open_rgb: bool,
+    pub usb: bool,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
@@ -321,6 +329,12 @@ struct DeviceDetail {
     min_dpi: Option<u16>,
     #[serde(default, rename = "MaxDPI")]
     max_dpi: Option<u16>,
+    #[serde(default, rename = "SleepModes")]
+    sleep_modes: HashMap<String, String>,
+    #[serde(default, rename = "LiftHeights")]
+    lift_heights: HashMap<String, String>,
+    #[serde(default, rename = "Usb")]
+    usb: Option<bool>,
     #[serde(default, rename = "Connected")]
     connected_cap: Option<bool>,
     #[serde(default)]
@@ -355,6 +369,16 @@ struct DeviceProfile {
     layout: Option<String>,
     #[serde(default, rename = "RGBCluster")]
     rgb_cluster: Option<bool>,
+    #[serde(default, rename = "SleepMode")]
+    sleep_mode: Option<i64>,
+    #[serde(default, rename = "AngleSnapping")]
+    angle_snapping: Option<i64>,
+    #[serde(default, rename = "ButtonOptimization")]
+    button_optimization: Option<i64>,
+    #[serde(default, rename = "LiftHeight")]
+    lift_height: Option<i64>,
+    #[serde(default, rename = "OpenRGBIntegration")]
+    open_rgb: Option<bool>,
     #[serde(default, rename = "Keyboards")]
     keyboards: Option<serde_json::Value>,
 }
@@ -532,6 +556,60 @@ impl DeviceDetail {
             .collect();
         buttons.sort_by_key(|(index, _)| *index);
         buttons.into_iter().map(|(_, button)| button).collect()
+    }
+
+    fn sorted_modes(map: &HashMap<String, String>) -> Vec<(i64, String)> {
+        let mut items: Vec<(i64, String)> = map
+            .iter()
+            .filter_map(|(k, v)| k.parse::<i64>().ok().map(|n| (n, v.clone())))
+            .collect();
+        items.sort_by_key(|(n, _)| *n);
+        items
+    }
+
+    fn sleep_modes(&self) -> Vec<(i64, String)> {
+        Self::sorted_modes(&self.sleep_modes)
+    }
+
+    fn lift_heights(&self) -> Vec<(i64, String)> {
+        Self::sorted_modes(&self.lift_heights)
+    }
+
+    fn sleep_mode(&self) -> i64 {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.sleep_mode)
+            .unwrap_or(0)
+    }
+
+    fn lift_height(&self) -> i64 {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.lift_height)
+            .unwrap_or(0)
+    }
+
+    fn angle_snapping(&self) -> bool {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.angle_snapping)
+            .unwrap_or(0)
+            != 0
+    }
+
+    fn button_optimization(&self) -> bool {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.button_optimization)
+            .unwrap_or(0)
+            != 0
+    }
+
+    fn open_rgb(&self) -> bool {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.open_rgb)
+            .unwrap_or(false)
     }
 
     fn profile_name(&self) -> String {
@@ -973,6 +1051,26 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
         } else {
             Vec::new()
         };
+        let sleep_modes = detail
+            .as_ref()
+            .map(DeviceDetail::sleep_modes)
+            .unwrap_or_default();
+        let active_sleep = detail.as_ref().map(DeviceDetail::sleep_mode).unwrap_or(0);
+        let angle_snapping = detail
+            .as_ref()
+            .map(DeviceDetail::angle_snapping)
+            .unwrap_or(false);
+        let button_optimization = detail
+            .as_ref()
+            .map(DeviceDetail::button_optimization)
+            .unwrap_or(false);
+        let lift_heights = detail
+            .as_ref()
+            .map(DeviceDetail::lift_heights)
+            .unwrap_or_default();
+        let active_lift = detail.as_ref().map(DeviceDetail::lift_height).unwrap_or(0);
+        let open_rgb = detail.as_ref().map(DeviceDetail::open_rgb).unwrap_or(false);
+        let usb = detail.as_ref().and_then(|d| d.usb).unwrap_or(true);
 
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
@@ -1007,6 +1105,14 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             max_dpi,
             zones,
             mouse_buttons,
+            sleep_modes,
+            active_sleep,
+            angle_snapping,
+            button_optimization,
+            lift_heights,
+            active_lift,
+            open_rgb,
+            usb,
         });
     }
 
@@ -1484,6 +1590,51 @@ fn color_map(colors: &[[u8; 3]]) -> serde_json::Map<String, serde_json::Value> {
             )
         })
         .collect()
+}
+
+/// Set the mouse sleep timer (minutes).
+pub fn set_mouse_sleep(serial: &str, minutes: i64) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/sleep"),
+        &serde_json::json!({ "deviceId": serial, "sleepMode": minutes }),
+    )
+}
+
+/// Enable or disable angle snapping.
+pub fn set_angle_snapping(serial: &str, on: bool) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/angleSnapping"),
+        &serde_json::json!({ "deviceId": serial, "angleSnapping": if on { 1 } else { 0 } }),
+    )
+}
+
+/// Enable or disable button response optimisation.
+pub fn set_button_optimization(serial: &str, on: bool) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/buttonOptimization"),
+        &serde_json::json!({ "deviceId": serial, "buttonOptimization": if on { 1 } else { 0 } }),
+    )
+}
+
+/// Set the mouse lift-off height.
+pub fn set_lift_height(serial: &str, height: i64) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/liftHeight"),
+        &serde_json::json!({ "deviceId": serial, "liftHeight": height }),
+    )
+}
+
+/// Enable or disable OpenRGB integration for a device.
+pub fn set_open_rgb(serial: &str, on: bool) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/color/setOpenRgbIntegration"),
+        &serde_json::json!({ "deviceId": serial, "mode": if on { 1 } else { 0 } }),
+    )
 }
 
 /// Send a JSON body with the given method and check the `status` field (1 = ok).
