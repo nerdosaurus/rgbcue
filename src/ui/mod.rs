@@ -1959,7 +1959,7 @@ fn device_card(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if let Some(battery) = d.battery {
                         let (rect, _) =
-                            ui.allocate_exact_size(Vec2::new(26.0, 12.0), Sense::hover());
+                            ui.allocate_exact_size(Vec2::new(30.0, 14.0), Sense::hover());
                         icons::battery(ui.painter(), rect, battery);
                         ui.label(
                             RichText::new(format!("{battery}%"))

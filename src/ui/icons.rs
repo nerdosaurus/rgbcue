@@ -511,9 +511,10 @@ pub fn commander(painter: &egui::Painter, rect: Rect, color: Color32) {
 }
 
 pub fn battery(painter: &egui::Painter, rect: Rect, pct: u8) {
+    let margin = rect.height() * 0.18;
     let body = Rect::from_min_max(
-        egui::pos2(rect.left(), rect.top() + rect.height() * 0.25),
-        egui::pos2(rect.right() - 3.0, rect.bottom() - rect.height() * 0.25),
+        egui::pos2(rect.left(), rect.top() + margin),
+        egui::pos2(rect.right() - 4.0, rect.bottom() - margin),
     );
     painter.rect_stroke(
         body,
@@ -521,14 +522,12 @@ pub fn battery(painter: &egui::Painter, rect: Rect, pct: u8) {
         Stroke::new(1.0, MUTED),
         StrokeKind::Inside,
     );
-    painter.rect_filled(
-        Rect::from_min_max(
-            egui::pos2(body.right(), body.center().y - 2.0),
-            egui::pos2(body.right() + 2.0, body.center().y + 2.0),
-        ),
-        1,
-        MUTED,
+    let terminal = Rect::from_center_size(
+        egui::pos2(body.right() + 2.0, body.center().y),
+        Vec2::new(3.0, rect.height() * 0.32),
     );
+    painter.rect_filled(terminal, 1, MUTED);
+
     let fill = (pct as f32 / 100.0).clamp(0.0, 1.0);
     let inner = body.shrink(2.0);
     painter.rect_filled(
