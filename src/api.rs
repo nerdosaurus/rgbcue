@@ -177,6 +177,16 @@ fn get(url: &str) -> Result<String, String> {
     resp.into_string().map_err(|e| format!("read failed: {e}"))
 }
 
+fn post_body(url: &str, payload: &serde_json::Value) -> Result<String, String> {
+    ureq::post(url)
+        .timeout(TIMEOUT)
+        .set("Content-Type", "application/json")
+        .send_string(&payload.to_string())
+        .map_err(|e| format!("request failed: {e}"))?
+        .into_string()
+        .map_err(|e| format!("read failed: {e}"))
+}
+
 // -- dashboard --------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +264,32 @@ pub struct MouseButton {
     pub modifier_key: i32,
     pub retain_original: bool,
     pub toggle_delay: u16,
+}
+
+/// One checkbox in the keyboard performance modal.
+#[derive(Debug, Clone, Default)]
+pub struct PerformanceItem {
+    pub name: String,
+    pub internal: String,
+    pub value: bool,
+}
+
+/// One key slot in the FlashTap configuration.
+#[derive(Debug, Clone, Default)]
+pub struct FlashTapKey {
+    pub index: usize,
+    pub name: String,
+    pub key_data: Option<i64>,
+}
+
+/// FlashTap configuration for a keyboard.
+#[derive(Debug, Clone, Default)]
+pub struct FlashTapData {
+    pub active: bool,
+    pub mode: i64,
+    pub modes: Vec<(i64, String)>,
+    pub color: [u8; 3],
+    pub keys: Vec<FlashTapKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -1534,6 +1570,7 @@ pub fn set_keyboard_color(
     key_id: i32,
     option: i32,
     color: [u8; 3],
+    keys: &[i32],
 ) -> Result<(), String> {
     send_json(
         "POST",
@@ -1542,7 +1579,192 @@ pub fn set_keyboard_color(
             "deviceId": serial,
             "keyId": key_id,
             "keyOption": option,
+            "keys": keys,
             "color": { "red": color[0], "green": color[1], "blue": color[2] }
+        }),
+    )
+}
+
+/// Read the keyboard performance checkboxes.
+pub fn fetch_keyboard_performance(serial: &str) -> Result<Vec<PerformanceItem>, String> {
+    #[derive(serde::Deserialize)]
+    struct Item {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        internal: String,
+        #[serde(default)]
+        value: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Response {
+        status: i32,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        data: Vec<Item>,
+    }
+
+    let body = get(&format!("{BASE}/api/keyboard/getPerformance/{serial}"))?;
+    let resp: Response = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    if resp.status != 1 {
+        return Err(if resp.message.is_empty() {
+            "Unable to read keyboard performance".to_string()
+        } else {
+            resp.message
+        });
+    }
+    Ok(resp
+        .data
+        .into_iter()
+        .map(|item| PerformanceItem {
+            name: item.name,
+            internal: item.internal,
+            value: item.value,
+        })
+        .collect())
+}
+
+/// Save the keyboard performance checkboxes.
+pub fn set_keyboard_performance(serial: &str, items: &[(String, bool)]) -> Result<(), String> {
+    let mut payload = serde_json::json!({ "deviceId": serial });
+    for (internal, value) in items {
+        payload[internal.as_str()] = serde_json::Value::Bool(*value);
+    }
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/setPerformance"),
+        &payload,
+    )
+}
+
+/// Read the keyboard FlashTap configuration.
+pub fn fetch_flash_tap(serial: &str) -> Result<FlashTapData, String> {
+    #[derive(serde::Deserialize)]
+    struct Response {
+        status: i32,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        data: Option<serde_json::Value>,
+    }
+
+    let body = get(&format!("{BASE}/api/keyboard/getFlashTap/{serial}"))?;
+    let resp: Response = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    if resp.status != 1 {
+        return Err(if resp.message.is_empty() {
+            "No FlashTap data for this keyboard".to_string()
+        } else {
+            resp.message
+        });
+    }
+    let data = resp
+        .data
+        .ok_or_else(|| "No FlashTap data for this keyboard".to_string())?;
+
+    let active = data.get("active").and_then(|v| v.as_i64()).unwrap_or(0) != 0;
+    let mode = data.get("mode").and_then(|v| v.as_i64()).unwrap_or(0);
+    let color = data
+        .get("color")
+        .and_then(json_color)
+        .unwrap_or([255, 255, 255]);
+    let mut modes: Vec<(i64, String)> = data
+        .get("modes")
+        .and_then(|v| v.as_object())
+        .map(|map| {
+            map.iter()
+                .filter_map(|(k, v)| {
+                    let n = k.parse::<i64>().ok()?;
+                    Some((n, v.as_str()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    modes.sort_by_key(|(n, _)| *n);
+
+    let mut keys: Vec<FlashTapKey> = data
+        .get("keys")
+        .and_then(|v| v.as_object())
+        .map(|map| {
+            map.iter()
+                .filter_map(|(k, v)| {
+                    let index = k.parse::<usize>().ok()?;
+                    Some(FlashTapKey {
+                        index,
+                        name: v
+                            .get("Name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        key_data: v.get("KeyData").and_then(|n| n.as_i64()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.sort_by_key(|key| key.index);
+
+    Ok(FlashTapData {
+        active,
+        mode,
+        modes,
+        color,
+        keys,
+    })
+}
+
+/// Keys that can be used as FlashTap slots, as (code, name) pairs.
+pub fn fetch_flash_tap_keys(serial: &str) -> Result<Vec<(String, String)>, String> {
+    #[derive(serde::Deserialize)]
+    struct Response {
+        status: i32,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        data: std::collections::HashMap<String, String>,
+    }
+
+    let body = post_body(
+        &format!("{BASE}/api/keyboard/getKeys/"),
+        &serde_json::json!({ "deviceId": serial }),
+    )?;
+    let resp: Response = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    if resp.status != 1 {
+        return Err(if resp.message.is_empty() {
+            "Unable to read keyboard keys".to_string()
+        } else {
+            resp.message
+        });
+    }
+    let mut keys: Vec<(i64, String, String)> = resp
+        .data
+        .into_iter()
+        .filter_map(|(code, name)| code.parse::<i64>().ok().map(|n| (n, code, name)))
+        .collect();
+    keys.sort_by_key(|(n, _, _)| *n);
+    Ok(keys
+        .into_iter()
+        .map(|(_, code, name)| (code, name))
+        .collect())
+}
+
+/// Save the keyboard FlashTap configuration.
+pub fn set_flash_tap(
+    serial: &str,
+    active: bool,
+    mode: i64,
+    keys: &[i64],
+    color: [u8; 3],
+) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/keyboard/setFlashTap"),
+        &serde_json::json!({
+            "deviceId": serial,
+            "flashTapActive": if active { 1 } else { 0 },
+            "flashTapKeys": keys,
+            "flashTapMode": mode,
+            "flashTapColor": { "red": color[0], "green": color[1], "blue": color[2] }
         }),
     )
 }

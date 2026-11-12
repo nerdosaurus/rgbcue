@@ -34,7 +34,7 @@ const LAYOUTS: &[&str] = &["US", "UK", "DE", "Nordic"];
 const POLLING: &[&str] = &["125 Hz", "250 Hz", "500 Hz", "1000 Hz"];
 const THEMES: &[&str] = &["Default", "Midnight", "Nord"];
 const LANGUAGES: &[&str] = &["English", "Deutsch", "Français", "Hrvatski"];
-const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys"];
+const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
 const SWATCHES: &[[u8; 3]] = &[
     [255, 255, 255],
     [255, 82, 82],
@@ -98,6 +98,16 @@ fn default_polling_rates() -> Vec<(i64, String)> {
         .collect()
 }
 
+/// Keyboards whose OpenLinkHub page exposes the FlashTap controls.
+fn supports_flash_tap(product: &str) -> bool {
+    let n = product.to_uppercase();
+    n.contains("VANGUARD")
+        || n.contains("K70 MAX")
+        || n.contains("K70 PRO TKL")
+        || n.contains("CLIPPER")
+        || n.contains("GALLEON")
+}
+
 #[derive(Clone)]
 struct Device {
     name: String,
@@ -120,6 +130,8 @@ struct Device {
     polling_rates: Vec<(i64, String)>,
     keyboard: Option<api::KeyboardLayout>,
     selected_key: Option<i32>,
+    selected_keys: Vec<i32>,
+    flash_tap_supported: bool,
     key_scope: usize,
     keyboard_profiles: Vec<String>,
     keyboard_profile: usize,
@@ -197,6 +209,26 @@ struct AssignmentEditor {
     toggle_delay: String,
 }
 
+struct PerformanceModal {
+    serial: String,
+    items: Vec<api::PerformanceItem>,
+}
+
+struct FlashTapKeyRow {
+    index: usize,
+    selected: usize,
+}
+
+struct FlashTapModal {
+    serial: String,
+    active: bool,
+    color: [u8; 3],
+    mode: usize,
+    modes: Vec<(i64, String)>,
+    keys: Vec<FlashTapKeyRow>,
+    options: Vec<(String, String)>,
+}
+
 enum DeviceAction {
     Profile(String),
     Rgb(String),
@@ -207,6 +239,7 @@ enum DeviceAction {
         key_id: i32,
         option: i32,
         color: [u8; 3],
+        keys: Vec<i32>,
     },
     KeyboardProfile(String),
     SaveKeyboardProfile,
@@ -223,6 +256,8 @@ enum DeviceAction {
     OpenRgb(bool),
     SaveUserProfile(String),
     DeleteUserProfile(String),
+    Performance,
+    FlashTap,
     Assignments,
     Add,
     Remove,
@@ -296,6 +331,8 @@ struct PreviewApp {
     pending_brightness: Option<(String, u8, Instant)>,
     notice: Option<(String, bool)>,
     assignment_editor: Option<AssignmentEditor>,
+    performance_modal: Option<PerformanceModal>,
+    flash_tap_modal: Option<FlashTapModal>,
     art: ArtCache,
 }
 
@@ -319,6 +356,8 @@ impl PreviewApp {
             pending_brightness: None,
             notice: None,
             assignment_editor: None,
+            performance_modal: None,
+            flash_tap_modal: None,
             art: ArtCache::new(),
             monitor_order: (0..5).collect(),
             device_order: (0..5).collect(),
@@ -381,6 +420,8 @@ impl PreviewApp {
                     polling_rates: default_polling_rates(),
                     keyboard: None,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported: false,
                     key_scope: 0,
                     keyboard_profiles: Vec::new(),
                     keyboard_profile: 0,
@@ -422,6 +463,8 @@ impl PreviewApp {
                     polling_rates: default_polling_rates(),
                     keyboard: None,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported: false,
                     key_scope: 0,
                     keyboard_profiles: Vec::new(),
                     keyboard_profile: 0,
@@ -463,6 +506,8 @@ impl PreviewApp {
                     polling_rates: default_polling_rates(),
                     keyboard: None,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported: false,
                     key_scope: 0,
                     keyboard_profiles: Vec::new(),
                     keyboard_profile: 0,
@@ -504,6 +549,8 @@ impl PreviewApp {
                     polling_rates: default_polling_rates(),
                     keyboard: None,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported: false,
                     key_scope: 0,
                     keyboard_profiles: Vec::new(),
                     keyboard_profile: 0,
@@ -545,6 +592,8 @@ impl PreviewApp {
                     polling_rates: default_polling_rates(),
                     keyboard: None,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported: false,
                     key_scope: 0,
                     keyboard_profiles: Vec::new(),
                     keyboard_profile: 0,
@@ -607,6 +656,8 @@ impl PreviewApp {
             DeviceAction::OpenRgb(_) => "OpenRGB integration updated",
             DeviceAction::SaveUserProfile(_) => "User profile saved",
             DeviceAction::DeleteUserProfile(_) => "User profile deleted",
+            DeviceAction::Performance => "Keyboard performance",
+            DeviceAction::FlashTap => "FlashTap",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -623,7 +674,8 @@ impl PreviewApp {
                 key_id,
                 option,
                 color,
-            } => api::set_keyboard_color(&d.serial, key_id, option, color),
+                keys,
+            } => api::set_keyboard_color(&d.serial, key_id, option, color, &keys),
             DeviceAction::KeyboardProfile(name) => api::change_keyboard_profile(&d.serial, &name),
             DeviceAction::SaveKeyboardProfile => api::save_keyboard_profile(&d.serial),
             DeviceAction::NewKeyboardProfile(name) => api::new_keyboard_profile(&d.serial, &name),
@@ -652,6 +704,60 @@ impl PreviewApp {
             DeviceAction::OpenRgb(on) => api::set_open_rgb(&d.serial, on),
             DeviceAction::SaveUserProfile(name) => api::save_user_profile(&d.serial, &name),
             DeviceAction::DeleteUserProfile(name) => api::delete_user_profile(&d.serial, &name),
+            DeviceAction::Performance => {
+                match api::fetch_keyboard_performance(&d.serial) {
+                    Ok(items) => {
+                        self.performance_modal = Some(PerformanceModal {
+                            serial: d.serial.clone(),
+                            items,
+                        })
+                    }
+                    Err(err) => self.notice = Some((err, false)),
+                }
+                return;
+            }
+            DeviceAction::FlashTap => {
+                match api::fetch_flash_tap(&d.serial) {
+                    Ok(data) => {
+                        let options = api::fetch_flash_tap_keys(&d.serial).unwrap_or_default();
+                        let keys = data
+                            .keys
+                            .iter()
+                            .map(|key| {
+                                let selected = options
+                                    .iter()
+                                    .position(|(code, name)| {
+                                        key.key_data
+                                            .map(|n| *code == n.to_string())
+                                            .unwrap_or(false)
+                                            || *name == key.name
+                                    })
+                                    .unwrap_or(0);
+                                FlashTapKeyRow {
+                                    index: key.index,
+                                    selected,
+                                }
+                            })
+                            .collect();
+                        let mode = data
+                            .modes
+                            .iter()
+                            .position(|(n, _)| *n == data.mode)
+                            .unwrap_or(0);
+                        self.flash_tap_modal = Some(FlashTapModal {
+                            serial: d.serial.clone(),
+                            active: data.active,
+                            color: data.color,
+                            mode,
+                            modes: data.modes,
+                            keys,
+                            options,
+                        });
+                    }
+                    Err(err) => self.notice = Some((err, false)),
+                }
+                return;
+            }
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
             DeviceAction::Remove => api::remove_dashboard_device(&d.serial),
         };
@@ -937,6 +1043,214 @@ impl PreviewApp {
         }
     }
 
+    fn keyboard_modals(&mut self, ui: &mut Ui) {
+        if self.performance_modal.is_none() && self.flash_tap_modal.is_none() {
+            return;
+        }
+
+        let ctx = ui.ctx().clone();
+        let screen = ctx.viewport_rect();
+        egui::Area::new(egui::Id::unique("keyboard-modal-dim"))
+            .fixed_pos(screen.min)
+            .order(egui::Order::Middle)
+            .show(&ctx, |ui| {
+                ui.allocate_rect(screen, Sense::click());
+                ui.painter()
+                    .rect_filled(screen, 0, Color32::from_black_alpha(130));
+            });
+
+        if let Some(modal) = self.performance_modal.as_mut() {
+            let mut save = false;
+            let mut close = false;
+            egui::Window::new("keyboard-performance")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .order(egui::Order::Foreground)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(t::CARD)
+                        .stroke(Stroke::new(1.0, t::BORDER))
+                        .corner_radius(14)
+                        .inner_margin(16),
+                )
+                .show(&ctx, |ui| {
+                    ui.set_width(380.0);
+                    ui.horizontal(|ui| {
+                        t::section_label(ui, "Keyboard");
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if t::button(ui, "Close", t::Btn::Ghost) {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.label(
+                        RichText::new("Performance")
+                            .size(18.0)
+                            .strong()
+                            .color(t::WHITE),
+                    );
+                    ui.add_space(8.0);
+                    t::divider(ui);
+                    ui.add_space(6.0);
+
+                    for item in &mut modal.items {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&item.name).size(11.5).color(t::TEXT));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                t::switch(ui, &mut item.value);
+                            });
+                        });
+                        ui.add_space(2.0);
+                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if t::button(ui, "Save", t::Btn::Success) {
+                            save = true;
+                        }
+                        if t::button(ui, "Cancel", t::Btn::Normal) {
+                            close = true;
+                        }
+                    });
+                });
+
+            if save {
+                let modal = self.performance_modal.take().expect("performance open");
+                let items: Vec<(String, bool)> = modal
+                    .items
+                    .iter()
+                    .map(|item| (item.internal.clone(), item.value))
+                    .collect();
+                match api::set_keyboard_performance(&modal.serial, &items) {
+                    Ok(()) => self.notice = Some(("Keyboard performance updated".into(), true)),
+                    Err(err) => self.notice = Some((err, false)),
+                }
+            } else if close {
+                self.performance_modal = None;
+            }
+        }
+
+        if let Some(modal) = self.flash_tap_modal.as_mut() {
+            let mut save = false;
+            let mut close = false;
+            let mode_names: Vec<String> =
+                modal.modes.iter().map(|(_, name)| name.clone()).collect();
+            let option_names: Vec<String> =
+                modal.options.iter().map(|(_, name)| name.clone()).collect();
+
+            egui::Window::new("keyboard-flashtap")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .order(egui::Order::Foreground)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(t::CARD)
+                        .stroke(Stroke::new(1.0, t::BORDER))
+                        .corner_radius(14)
+                        .inner_margin(16),
+                )
+                .show(&ctx, |ui| {
+                    ui.set_width(400.0);
+                    ui.horizontal(|ui| {
+                        t::section_label(ui, "Keyboard");
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if t::button(ui, "Close", t::Btn::Ghost) {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.label(
+                        RichText::new("FlashTap")
+                            .size(18.0)
+                            .strong()
+                            .color(t::WHITE),
+                    );
+                    ui.add_space(8.0);
+                    t::divider(ui);
+                    ui.add_space(6.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Enable").size(11.5).color(t::TEXT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            t::switch(ui, &mut modal.active);
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Colour").size(11.5).color(t::TEXT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            egui::color_picker::color_edit_button_srgb(ui, &mut modal.color);
+                        });
+                    });
+                    ui.add_space(8.0);
+
+                    t::section_label(ui, "Mode");
+                    if !mode_names.is_empty() {
+                        t::select_strings(ui, &mode_names, &mut modal.mode);
+                    }
+                    ui.add_space(8.0);
+
+                    t::section_label(ui, "Keys");
+                    for key in modal.keys.iter_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("Key {}", key.index + 1))
+                                    .size(11.5)
+                                    .color(t::MUTED),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if !option_names.is_empty() {
+                                    t::select_strings_sized(
+                                        ui,
+                                        &option_names,
+                                        &mut key.selected,
+                                        200.0,
+                                    );
+                                }
+                            });
+                        });
+                        ui.add_space(2.0);
+                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if t::button(ui, "Save", t::Btn::Success) {
+                            save = true;
+                        }
+                        if t::button(ui, "Cancel", t::Btn::Normal) {
+                            close = true;
+                        }
+                    });
+                });
+
+            if save {
+                let modal = self.flash_tap_modal.take().expect("flashtap open");
+                let mode = modal.modes.get(modal.mode).map(|(n, _)| *n).unwrap_or(0);
+                let keys: Vec<i64> = modal
+                    .keys
+                    .iter()
+                    .map(|row| {
+                        modal
+                            .options
+                            .get(row.selected)
+                            .and_then(|(code, _)| code.parse().ok())
+                            .unwrap_or(0)
+                    })
+                    .collect();
+                match api::set_flash_tap(&modal.serial, modal.active, mode, &keys, modal.color) {
+                    Ok(()) => self.notice = Some(("FlashTap updated".into(), true)),
+                    Err(err) => self.notice = Some((err, false)),
+                }
+            } else if close {
+                self.flash_tap_modal = None;
+            }
+        }
+    }
+
     fn apply_dashboard(&mut self, dash: api::Dashboard) {
         let selected = match self.page {
             Page::Device(i) => self.devices.get(i).map(|d| d.serial.clone()),
@@ -957,6 +1271,7 @@ impl PreviewApp {
             if let Some(old) = self.devices.iter().find(|d| d.serial == s.serial) {
                 let mut d = old.clone();
                 d.name = s.product;
+                d.flash_tap_supported = supports_flash_tap(&d.name);
                 d.firmware = s.firmware;
                 d.connected = s.connected;
                 d.battery = s.battery;
@@ -1082,6 +1397,7 @@ impl PreviewApp {
                     .iter()
                     .position(|(n, _)| *n == s.active_polling)
                     .unwrap_or(0);
+                let flash_tap_supported = supports_flash_tap(&s.product);
                 let sleep = s
                     .sleep_modes
                     .iter()
@@ -1113,6 +1429,8 @@ impl PreviewApp {
                     polling_rates,
                     keyboard: s.keyboard,
                     selected_key: None,
+                    selected_keys: Vec::new(),
+                    flash_tap_supported,
                     key_scope: 0,
                     keyboard_profile: s
                         .keyboard_profiles
@@ -1670,8 +1988,23 @@ impl PreviewApp {
                         }
                         if d.kind == Kind::Keyboard {
                             t::settings_row(ui, "Performance", |ui| {
-                                t::button(ui, "Configure", t::Btn::Normal)
+                                if t::button(ui, "Configure", t::Btn::Normal) {
+                                    action = Some(DeviceAction::Performance);
+                                    true
+                                } else {
+                                    false
+                                }
                             });
+                            if d.flash_tap_supported {
+                                t::settings_row(ui, "FlashTap", |ui| {
+                                    if t::button(ui, "Configure", t::Btn::Normal) {
+                                        action = Some(DeviceAction::FlashTap);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                            }
                         }
                         if d.kind == Kind::Mouse && d.wireless && !d.sleep_modes.is_empty() {
                             let names: Vec<String> =
@@ -1830,6 +2163,7 @@ impl PreviewApp {
         });
 
         self.assignment_panel(ui);
+        self.keyboard_modals(ui);
 
         if let Some(value) = brightness {
             let serial = self.devices[idx].serial.clone();
@@ -2496,6 +2830,7 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
         });
 
         ui.add_space(12.0);
+        let multi_select = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
         let mut clicked = None;
 
         for (ri, row) in layout.rows.iter().enumerate() {
@@ -2510,7 +2845,7 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                 let resp = ui.interact(rect, id, Sense::click());
                 let painter = ui.painter();
                 let base = Color32::from_rgb(key.color[0], key.color[1], key.color[2]);
-                let selected = d.selected_key == Some(key.index);
+                let selected = d.selected_keys.contains(&key.index);
                 let fill = if selected {
                     Color32::from_rgba_unmultiplied(255, 255, 255, 26)
                 } else if resp.hovered() {
@@ -2559,15 +2894,25 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                     );
                 }
                 if resp.clicked() {
-                    clicked = Some(key.index);
+                    clicked = Some((key.index, multi_select));
                 }
                 col += key.span;
             }
             ui.add_space(gap);
         }
 
-        if let Some(index) = clicked {
-            d.selected_key = Some(index);
+        if let Some((index, multi)) = clicked {
+            if multi {
+                if let Some(pos) = d.selected_keys.iter().position(|k| *k == index) {
+                    d.selected_keys.remove(pos);
+                } else {
+                    d.selected_keys.push(index);
+                }
+            } else {
+                d.selected_keys = vec![index];
+            }
+            d.selected_key = d.selected_keys.last().copied();
+            d.key_scope = if d.selected_keys.len() > 1 { 3 } else { 0 };
         }
 
         ui.add_space(8.0);
@@ -2583,7 +2928,11 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                 }
             }
             t::select_strings(ui, &scopes, &mut d.key_scope);
-            let can_apply = d.selected_key.is_some() || d.key_scope == 2;
+            let can_apply = match d.key_scope {
+                2 => true,
+                3 => !d.selected_keys.is_empty(),
+                _ => d.selected_key.is_some(),
+            };
             if t::button(
                 ui,
                 "Apply",
@@ -2598,6 +2947,7 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
                     key_id: d.selected_key.unwrap_or(1),
                     option: d.key_scope as i32,
                     color: *color,
+                    keys: d.selected_keys.clone(),
                 });
             }
             if t::button(ui, "Key Assignments", t::Btn::Normal) {
@@ -2642,7 +2992,7 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
         if d.selected_key.is_none() && d.key_scope != 2 {
             ui.add_space(4.0);
             ui.label(
-                RichText::new("Select a key, or choose All keys.")
+                RichText::new("Select a key, Ctrl-click for several, or choose All keys.")
                     .size(10.0)
                     .color(t::DIM),
             );
