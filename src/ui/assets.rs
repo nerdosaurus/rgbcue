@@ -62,7 +62,7 @@ fn art_for(product: &str) -> Option<&'static Art> {
     let n = product.to_uppercase();
     if n.contains("DARKSTAR") {
         Some(&ART_DARKSTAR)
-    } else if n.contains("SCIMITAR") && n.contains("WIRELESS") {
+    } else if n.contains("SCIMITAR") && (n.contains("WIRELESS") || n.contains("ELITE SE")) {
         Some(&ART_SCIMITAR_WIRELESS)
     } else if n.contains("SCIMITAR") {
         Some(&ART_SCIMITAR_WIRED)
