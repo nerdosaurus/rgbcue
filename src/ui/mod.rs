@@ -107,6 +107,7 @@ struct Device {
     connected: bool,
     battery: Option<u8>,
     profile: usize,
+    delete_profile: usize,
     brightness: f32,
     effect: usize,
     speed: f32,
@@ -220,6 +221,8 @@ enum DeviceAction {
     ButtonOptimization(bool),
     LiftHeight(i64),
     OpenRgb(bool),
+    SaveUserProfile(String),
+    DeleteUserProfile(String),
     Assignments,
     Add,
     Remove,
@@ -365,6 +368,7 @@ impl PreviewApp {
                     connected: true,
                     battery: None,
                     profile: 0,
+                    delete_profile: 0,
                     brightness: 80.0,
                     effect: 1,
                     speed: 60.0,
@@ -405,6 +409,7 @@ impl PreviewApp {
                     connected: true,
                     battery: None,
                     profile: 0,
+                    delete_profile: 0,
                     brightness: 75.0,
                     effect: 0,
                     speed: 50.0,
@@ -445,6 +450,7 @@ impl PreviewApp {
                     connected: true,
                     battery: Some(84),
                     profile: 1,
+                    delete_profile: 0,
                     brightness: 65.0,
                     effect: 7,
                     speed: 50.0,
@@ -485,6 +491,7 @@ impl PreviewApp {
                     connected: true,
                     battery: None,
                     profile: 0,
+                    delete_profile: 0,
                     brightness: 70.0,
                     effect: 0,
                     speed: 50.0,
@@ -525,6 +532,7 @@ impl PreviewApp {
                     connected: true,
                     battery: None,
                     profile: 0,
+                    delete_profile: 0,
                     brightness: 75.0,
                     effect: 0,
                     speed: 55.0,
@@ -574,6 +582,8 @@ impl PreviewApp {
                 | DeviceAction::SaveDpi(_)
                 | DeviceAction::SaveDpiColors(_)
                 | DeviceAction::SaveZoneColors(_)
+                | DeviceAction::SaveUserProfile(_)
+                | DeviceAction::DeleteUserProfile(_)
         );
         let message = match &action {
             DeviceAction::Profile(_) => "Profile updated",
@@ -595,6 +605,8 @@ impl PreviewApp {
             DeviceAction::ButtonOptimization(_) => "Button response updated",
             DeviceAction::LiftHeight(_) => "Lift height updated",
             DeviceAction::OpenRgb(_) => "OpenRGB integration updated",
+            DeviceAction::SaveUserProfile(_) => "User profile saved",
+            DeviceAction::DeleteUserProfile(_) => "User profile deleted",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -638,6 +650,8 @@ impl PreviewApp {
             DeviceAction::ButtonOptimization(on) => api::set_button_optimization(&d.serial, on),
             DeviceAction::LiftHeight(height) => api::set_lift_height(&d.serial, height),
             DeviceAction::OpenRgb(on) => api::set_open_rgb(&d.serial, on),
+            DeviceAction::SaveUserProfile(name) => api::save_user_profile(&d.serial, &name),
+            DeviceAction::DeleteUserProfile(name) => api::delete_user_profile(&d.serial, &name),
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
             DeviceAction::Remove => api::remove_dashboard_device(&d.serial),
         };
@@ -948,6 +962,46 @@ impl PreviewApp {
                 d.battery = s.battery;
                 d.kind = kind;
                 d.keyboard = s.keyboard;
+                d.profiles = if s.profiles.is_empty() {
+                    vec!["Default".to_string()]
+                } else {
+                    s.profiles.clone()
+                };
+                d.profile = d
+                    .profiles
+                    .iter()
+                    .position(|p| *p == s.active_profile)
+                    .unwrap_or(0);
+                d.rgb_modes = if s.rgb_modes.is_empty() {
+                    vec![s.active_rgb.clone()]
+                } else {
+                    s.rgb_modes.clone()
+                };
+                d.effect = d
+                    .rgb_modes
+                    .iter()
+                    .position(|e| *e == s.active_rgb)
+                    .unwrap_or(0);
+                d.layouts = if s.layouts.is_empty() {
+                    vec!["US".to_string()]
+                } else {
+                    s.layouts.clone()
+                };
+                d.layout = d
+                    .layouts
+                    .iter()
+                    .position(|l| *l == s.active_layout)
+                    .unwrap_or(0);
+                d.polling_rates = if s.polling_rates.is_empty() {
+                    default_polling_rates()
+                } else {
+                    s.polling_rates.clone()
+                };
+                d.polling = d
+                    .polling_rates
+                    .iter()
+                    .position(|(n, _)| *n == s.active_polling)
+                    .unwrap_or(0);
                 if !s.assignment_types.is_empty() {
                     d.assignment_types = s.assignment_types.clone();
                 }
@@ -1046,6 +1100,7 @@ impl PreviewApp {
                     connected: s.connected,
                     battery: s.battery,
                     profile,
+                    delete_profile: 0,
                     brightness: s.brightness as f32,
                     effect,
                     speed: 50.0,
@@ -1342,13 +1397,19 @@ impl PreviewApp {
                 self.header(ui);
                 ui.add_space(10.0);
                 t::divider(ui);
+                ui.add_space(6.0);
+                // Reserve the row even without a notice so showing one does not
+                // push the page content down.
+                let (notice_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
                 if let Some((message, ok)) = &self.notice {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(message).size(11.5).color(if *ok {
-                        t::GOOD
-                    } else {
-                        t::BAD
-                    }));
+                    ui.painter().text(
+                        egui::pos2(notice_rect.left(), notice_rect.center().y),
+                        Align2::LEFT_CENTER,
+                        message,
+                        FontId::proportional(11.5),
+                        if *ok { t::GOOD } else { t::BAD },
+                    );
                 }
                 ui.add_space(16.0);
 
@@ -1667,6 +1728,52 @@ impl PreviewApp {
                                         ));
                                     }
                                     changed
+                                });
+                            }
+                        }
+
+                        if d.kind == Kind::Mouse {
+                            ui.add_space(10.0);
+                            t::divider(ui);
+                            ui.add_space(8.0);
+                            t::section_label(ui, "User profiles");
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut d.new_profile_name)
+                                        .hint_text("Profile name")
+                                        .desired_width(132.0)
+                                        .text_color(t::TEXT),
+                                );
+                                let name = d.new_profile_name.trim();
+                                let valid = name.len() >= 3
+                                    && name.chars().all(|c| c.is_ascii_alphanumeric());
+                                if t::button(ui, "Save", t::Btn::Success) && valid {
+                                    action = Some(DeviceAction::SaveUserProfile(name.to_string()));
+                                    d.new_profile_name.clear();
+                                }
+                            });
+                            let deletable: Vec<String> = d
+                                .profiles
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, name)| {
+                                    *i != d.profile
+                                        && !name.eq_ignore_ascii_case("default")
+                                        && !name.eq_ignore_ascii_case("none")
+                                })
+                                .map(|(_, name)| name.clone())
+                                .collect();
+                            if !deletable.is_empty() {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    d.delete_profile = d.delete_profile.min(deletable.len() - 1);
+                                    t::select_strings(ui, &deletable, &mut d.delete_profile);
+                                    if t::button(ui, "Delete", t::Btn::Danger) {
+                                        action = Some(DeviceAction::DeleteUserProfile(
+                                            deletable[d.delete_profile].clone(),
+                                        ));
+                                    }
                                 });
                             }
                         }

@@ -1637,6 +1637,24 @@ pub fn set_open_rgb(serial: &str, on: bool) -> Result<(), String> {
     )
 }
 
+/// Save the current device settings as a named user profile.
+pub fn save_user_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "PUT",
+        &format!("{BASE}/api/userProfile"),
+        &serde_json::json!({ "deviceId": serial, "userProfileName": name }),
+    )
+}
+
+/// Delete a named user profile.
+pub fn delete_user_profile(serial: &str, name: &str) -> Result<(), String> {
+    send_json(
+        "DELETE",
+        &format!("{BASE}/api/userProfile/delete"),
+        &serde_json::json!({ "deviceId": serial, "userProfileName": name }),
+    )
+}
+
 /// Send a JSON body with the given method and check the `status` field (1 = ok).
 fn send_json(method: &str, url: &str, payload: &serde_json::Value) -> Result<(), String> {
     let request = match method {
