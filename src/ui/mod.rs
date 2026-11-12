@@ -3,6 +3,7 @@
 //! The dashboard and sidebar are wired to the OpenLinkHub API; other screens
 //! are still visual previews. Launch it with `rgbcue --preview`.
 
+pub mod assets;
 pub mod icons;
 pub mod theme;
 
@@ -11,6 +12,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, ScrollArea, Sense,
     Stroke, StrokeKind, Ui, Vec2,
 };
+use assets::{draw_line_art, ArtCache};
 use icons::Icon;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -268,6 +270,7 @@ struct PreviewApp {
     pending_brightness: Option<(String, u8, Instant)>,
     notice: Option<(String, bool)>,
     assignment_editor: Option<AssignmentEditor>,
+    art: ArtCache,
 }
 
 impl PreviewApp {
@@ -290,6 +293,7 @@ impl PreviewApp {
             pending_brightness: None,
             notice: None,
             assignment_editor: None,
+            art: ArtCache::new(),
             monitor_order: (0..5).collect(),
             device_order: (0..5).collect(),
             monitors: vec![
@@ -1266,6 +1270,7 @@ impl PreviewApp {
         let mut add_serial: Option<String> = None;
 
         let mut next_page = None;
+        let art = &mut self.art;
         let total = device_order.len() + 1;
         let mut i = 0usize;
         let mut row = 0usize;
@@ -1278,7 +1283,7 @@ impl PreviewApp {
                 for _ in 0..cols {
                     if i < device_order.len() {
                         let di = device_order[i];
-                        if device_card(ui, &self.devices[di], dw, i, &mut pending) {
+                        if device_card(ui, &self.devices[di], dw, i, &mut pending, art) {
                             next_page = Some(Page::Device(di));
                         }
                     } else if i == device_order.len() {
@@ -1323,6 +1328,7 @@ impl PreviewApp {
     fn device_page(&mut self, ui: &mut Ui, idx: usize) {
         let on_dashboard = self.device_order.contains(&idx);
         let color = &mut self.color;
+        let art = &mut self.art;
         let d = &mut self.devices[idx];
         let mut action: Option<DeviceAction> = None;
         let mut brightness: Option<f32> = None;
@@ -1429,7 +1435,7 @@ impl PreviewApp {
                     }
                 } else {
                     let mut rgb_action: Option<String> = None;
-                    lighting_card(ui, d, color, &mut brightness, &mut rgb_action);
+                    lighting_card(ui, d, color, &mut brightness, &mut rgb_action, art);
                     if let Some(name) = rgb_action {
                         action = Some(DeviceAction::Rgb(name));
                     }
@@ -1888,6 +1894,7 @@ fn device_card(
     width: f32,
     pos: usize,
     pending: &mut Option<(Group, usize, usize)>,
+    art: &mut ArtCache,
 ) -> bool {
     let resp = t::card_at(ui, Vec2::new(width, 236.0), |ui| {
         ui.horizontal(|ui| {
@@ -1916,7 +1923,13 @@ fn device_card(
         let rainbow = matches!(d.effect, 1 | 7);
         match d.kind {
             Kind::Keyboard => icons::keyboard(ui.painter(), rect, color, brightness, rainbow),
-            Kind::Mouse => icons::mouse(ui.painter(), rect, color, brightness, rainbow),
+            Kind::Mouse => {
+                if let Some(texture) = art.mouse_top(ui.ctx(), &d.name) {
+                    draw_line_art(ui.painter(), rect.shrink2(Vec2::new(0.0, 4.0)), &texture, color);
+                } else {
+                    icons::mouse(ui.painter(), rect, color, brightness, rainbow);
+                }
+            }
             Kind::Commander => icons::commander(ui.painter(), rect, color),
             Kind::Pump => icons::pump(ui.painter(), rect, 32.0, 50.0, t::ACCENT),
         }
@@ -2258,6 +2271,7 @@ fn lighting_card(
     color: &mut [u8; 3],
     brightness_out: &mut Option<f32>,
     rgb_out: &mut Option<String>,
+    art: &mut ArtCache,
 ) {
     t::card_padded(16).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -2332,7 +2346,13 @@ fn lighting_card(
         let rainbow = matches!(d.effect, 1 | 7);
         match d.kind {
             Kind::Keyboard => icons::keyboard(ui.painter(), rect, c, brightness, rainbow),
-            Kind::Mouse => icons::mouse(ui.painter(), rect, c, brightness, rainbow),
+            Kind::Mouse => {
+                if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
+                    draw_line_art(ui.painter(), rect, &texture, c);
+                } else {
+                    icons::mouse(ui.painter(), rect, c, brightness, rainbow);
+                }
+            }
             Kind::Commander => icons::commander(ui.painter(), rect, c),
             Kind::Pump => icons::pump(ui.painter(), rect, 32.0, 50.0, t::ACCENT),
         }

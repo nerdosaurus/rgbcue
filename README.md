@@ -8,6 +8,19 @@ which owns all the per-device HID/protocol work. The app only talks to OpenLinkH
 REST API at `http://127.0.0.1:27003`, so OpenLinkHub must be installed and running
 first.
 
+### Optional local artwork
+
+The port can use device line art extracted from iCUE's `.rcc` files when it is
+present locally:
+
+- Default root: `~/assets/icue/normalized`, override with `RGB_CUE_ASSETS`.
+- Current mapping: `scimitar_wireless/top.png` for the dashboard card and
+  `scimitar_wireless/side.png` for the mouse device page.
+- Missing files fall back to the drawn icons, so the app works without them.
+
+Corsair's artwork is proprietary; it is not committed here. The extraction
+tooling and `.rcc` files live alongside the normalised assets outside the repo.
+
 ## Build & run
 
 Requires a recent Rust toolchain (Rust 1.99+ / edition 2024).
