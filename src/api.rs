@@ -225,6 +225,21 @@ pub struct KeyboardLayout {
     pub rows: Vec<KeyRow>,
 }
 
+/// One DPI sensitivity stage, with the colour assigned to it.
+#[derive(Debug, Clone, Default)]
+pub struct DpiStage {
+    pub name: String,
+    pub value: u16,
+    pub color: [u8; 3],
+}
+
+/// One RGB zone on a mouse, with its current colour.
+#[derive(Debug, Clone, Default)]
+pub struct ZoneColor {
+    pub name: String,
+    pub color: [u8; 3],
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
     pub product: String,
@@ -251,6 +266,10 @@ pub struct DeviceStatus {
     pub keyboard_profiles: Vec<String>,
     pub active_keyboard_profile: String,
     pub assignment_types: Vec<(i32, String)>,
+    pub dpi_stages: Vec<DpiStage>,
+    pub min_dpi: u16,
+    pub max_dpi: u16,
+    pub zones: Vec<ZoneColor>,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
@@ -279,6 +298,10 @@ struct DeviceDetail {
     layouts: Vec<String>,
     #[serde(default, rename = "KeyAssignmentTypes")]
     assignment_types: HashMap<String, String>,
+    #[serde(default, rename = "MinDPI")]
+    min_dpi: Option<u16>,
+    #[serde(default, rename = "MaxDPI")]
+    max_dpi: Option<u16>,
     #[serde(default, rename = "Connected")]
     connected_cap: Option<bool>,
     #[serde(default)]
@@ -305,6 +328,8 @@ struct DeviceProfile {
     profile: Option<serde_json::Value>,
     #[serde(default, rename = "Profiles")]
     dpi_profiles: Option<serde_json::Value>,
+    #[serde(default, rename = "ZoneColors")]
+    zone_colors: Option<serde_json::Value>,
     #[serde(default, rename = "Label")]
     label: Option<String>,
     #[serde(default, rename = "Layout")]
@@ -370,7 +395,79 @@ impl DeviceDetail {
         let p = self.profile.as_ref()?;
         let entries = p.dpi_profiles.as_ref()?.as_object()?;
         let entry = entries.get(&idx.to_string())?;
-        entry.get("Name")?.as_str().map(str::to_string)
+        // OpenLinkHub tags the Go field `Name` as `name`, so live payloads use
+        // the lowercase key while older/synthetic payloads use `Name`.
+        entry
+            .get("name")
+            .or_else(|| entry.get("Name"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    fn dpi_stages(&self) -> Vec<DpiStage> {
+        let Some(entries) = self
+            .profile
+            .as_ref()
+            .and_then(|p| p.dpi_profiles.as_ref())
+            .and_then(|v| v.as_object())
+        else {
+            return Vec::new();
+        };
+        let mut stages: Vec<(i64, DpiStage)> = entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let idx = key.parse::<i64>().ok()?;
+                let name = entry
+                    .get("name")
+                    .or_else(|| entry.get("Name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Stage")
+                    .to_string();
+                let value = entry.get("Value").and_then(|v| v.as_u64())? as u16;
+                let color = entry
+                    .get("Color")
+                    .and_then(json_color)
+                    .unwrap_or([255, 255, 255]);
+                Some((idx, DpiStage { name, value, color }))
+            })
+            .collect();
+        stages.sort_by_key(|(idx, _)| *idx);
+        stages.into_iter().map(|(_, stage)| stage).collect()
+    }
+
+    fn zone_colors(&self) -> Vec<ZoneColor> {
+        let Some(entries) = self
+            .profile
+            .as_ref()
+            .and_then(|p| p.zone_colors.as_ref())
+            .and_then(|v| v.as_object())
+        else {
+            return Vec::new();
+        };
+        let mut zones: Vec<(i64, ZoneColor)> = entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let idx = key.parse::<i64>().ok()?;
+                let name = entry
+                    .get("Name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Zone")
+                    .to_string();
+                let color = entry
+                    .get("Color")
+                    .and_then(json_color)
+                    .unwrap_or([255, 255, 255]);
+                Some((idx, ZoneColor { name, color }))
+            })
+            .collect();
+        zones.sort_by_key(|(idx, _)| *idx);
+        zones.into_iter().map(|(_, zone)| zone).collect()
+    }
+
+    fn dpi_range(&self) -> (u16, u16) {
+        let min = self.min_dpi.unwrap_or(100);
+        let max = self.max_dpi.unwrap_or(18000).max(min);
+        (min, max)
     }
 
     fn profile_name(&self) -> String {
@@ -792,6 +889,18 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .as_ref()
             .map(DeviceDetail::assignment_types)
             .unwrap_or_default();
+        let dpi_stages = detail
+            .as_ref()
+            .map(DeviceDetail::dpi_stages)
+            .unwrap_or_default();
+        let (min_dpi, max_dpi) = detail
+            .as_ref()
+            .map(DeviceDetail::dpi_range)
+            .unwrap_or((100, 18000));
+        let zones = detail
+            .as_ref()
+            .map(DeviceDetail::zone_colors)
+            .unwrap_or_default();
 
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
@@ -821,6 +930,10 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             keyboard_profiles,
             active_keyboard_profile,
             assignment_types,
+            dpi_stages,
+            min_dpi,
+            max_dpi,
+            zones,
         });
     }
 
@@ -876,6 +989,25 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
         dashboard,
         monitors,
     })
+}
+
+/// Read an `rgb.Color` from the API (0-255 channels, or its `Hex` fallback).
+fn json_color(value: &serde_json::Value) -> Option<[u8; 3]> {
+    let channel = |key: &str| value.get(key).and_then(|v| v.as_f64());
+    if let (Some(r), Some(g), Some(b)) = (channel("red"), channel("green"), channel("blue")) {
+        let clamp = |v: f64| v.round().clamp(0.0, 255.0) as u8;
+        return Some([clamp(r), clamp(g), clamp(b)]);
+    }
+    let hex = value.get("Hex").and_then(|v| v.as_str())?;
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+    ])
 }
 
 fn cpu_model() -> Option<String> {
@@ -1177,6 +1309,51 @@ pub fn set_keyboard_color(
             "color": { "red": color[0], "green": color[1], "blue": color[2] }
         }),
     )
+}
+
+/// Save mouse DPI stage values.
+pub fn save_mouse_dpi(serial: &str, stages: &[u16]) -> Result<(), String> {
+    let stages: serde_json::Map<String, serde_json::Value> = stages
+        .iter()
+        .enumerate()
+        .map(|(i, value)| (i.to_string(), serde_json::json!(value)))
+        .collect();
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/dpi"),
+        &serde_json::json!({ "deviceId": serial, "stages": stages }),
+    )
+}
+
+/// Save the colour assigned to each DPI stage.
+pub fn save_mouse_dpi_colors(serial: &str, colors: &[[u8; 3]]) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/dpiColors"),
+        &serde_json::json!({ "deviceId": serial, "colorZones": color_map(colors) }),
+    )
+}
+
+/// Save the colour of each RGB zone on a mouse.
+pub fn save_mouse_zone_colors(serial: &str, colors: &[[u8; 3]]) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/mouse/zoneColors"),
+        &serde_json::json!({ "deviceId": serial, "colorZones": color_map(colors) }),
+    )
+}
+
+fn color_map(colors: &[[u8; 3]]) -> serde_json::Map<String, serde_json::Value> {
+    colors
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            (
+                i.to_string(),
+                serde_json::json!({ "red": c[0], "green": c[1], "blue": c[2] }),
+            )
+        })
+        .collect()
 }
 
 /// Send a JSON body with the given method and check the `status` field (1 = ok).
@@ -1530,19 +1707,36 @@ mod tests {
     #[test]
     fn parses_mouse_dpi() {
         let detail: DeviceDetail = serde_json::from_str(
-            r#"{
+            r##"{
+                "MinDPI": 100,
+                "MaxDPI": 18000,
                 "DeviceProfile": {
                     "Profile": 1,
                     "Profiles": {
-                        "0": {"Name": "Default", "Value": 800},
-                        "1": {"Name": "FPS", "Value": 1600}
+                        "0": {"name": "Default", "Value": 800, "Color": {"red": 255, "green": 0, "blue": 0}},
+                        "1": {"name": "FPS", "Value": 1600, "Color": {"red": 0, "green": 128, "blue": 255}}
+                    },
+                    "ZoneColors": {
+                        "0": {"Name": "Logo", "Color": {"Hex": "#ff8000"}},
+                        "1": {"Name": "Scroll wheel", "Color": {"red": 0, "green": 255, "blue": 0}}
                     }
                 }
-            }"#,
+            }"##,
         )
         .unwrap();
         assert_eq!(detail.dpi(), Some(1600));
         assert_eq!(detail.profile_name(), "FPS");
+        assert_eq!(detail.dpi_range(), (100, 18000));
+        let stages = detail.dpi_stages();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[1].name, "FPS");
+        assert_eq!(stages[1].value, 1600);
+        assert_eq!(stages[1].color, [0, 128, 255]);
+        let zones = detail.zone_colors();
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].name, "Logo");
+        assert_eq!(zones[0].color, [255, 128, 0]);
+        assert_eq!(zones[1].color, [0, 255, 0]);
     }
 
     #[test]

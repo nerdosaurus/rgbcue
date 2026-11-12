@@ -366,12 +366,27 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> bool {
 }
 
 pub fn slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, suffix: &str) -> bool {
+    slider_impl(ui, value, min, max, Some(suffix))
+}
+
+/// A slider without the numeric readout, for rows that show the value separately.
+pub fn slider_plain(ui: &mut Ui, value: &mut f32, min: f32, max: f32) -> bool {
+    slider_impl(ui, value, min, max, None)
+}
+
+fn slider_impl(
+    ui: &mut Ui,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    suffix: Option<&str>,
+) -> bool {
     let (rect, resp) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), 28.0),
         Sense::click_and_drag(),
     );
     let painter = ui.painter();
-    let value_w = 52.0;
+    let value_w = if suffix.is_some() { 52.0 } else { 0.0 };
     let track = Rect::from_min_max(
         egui::pos2(rect.left(), rect.center().y - 2.0),
         egui::pos2(rect.right() - value_w, rect.center().y + 2.0),
@@ -403,13 +418,15 @@ pub fn slider(ui: &mut Ui, value: &mut f32, min: f32, max: f32, suffix: &str) ->
         6.0,
         WHITE,
     );
-    painter.text(
-        egui::pos2(rect.right(), rect.center().y),
-        Align2::RIGHT_CENTER,
-        format!("{} {suffix}", value.round() as i32),
-        FontId::monospace(11.5),
-        TEXT,
-    );
+    if let Some(suffix) = suffix {
+        painter.text(
+            egui::pos2(rect.right(), rect.center().y),
+            Align2::RIGHT_CENTER,
+            format!("{} {suffix}", value.round() as i32),
+            FontId::monospace(11.5),
+            TEXT,
+        );
+    }
     changed
 }
 

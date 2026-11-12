@@ -124,6 +124,10 @@ struct Device {
     keyboard_profile: usize,
     new_profile_name: String,
     assignment_types: Vec<(i32, String)>,
+    dpi_stages: Vec<api::DpiStage>,
+    min_dpi: u16,
+    max_dpi: u16,
+    zones: Vec<api::ZoneColor>,
     stat: (String, String),
 }
 
@@ -197,6 +201,9 @@ enum DeviceAction {
     SaveKeyboardProfile,
     NewKeyboardProfile(String),
     DeleteKeyboardProfile(String),
+    SaveDpi(Vec<u16>),
+    SaveDpiColors(Vec<[u8; 3]>),
+    SaveZoneColors(Vec<[u8; 3]>),
     Assignments,
     Add,
     Remove,
@@ -321,7 +328,7 @@ impl PreviewApp {
                 Monitor {
                     id: "fans".into(),
                     title: "Fan speed".into(),
-                    value: "1 240 RPM".into(),
+                    value: "1240 RPM".into(),
                     detail: "Commander PRO".into(),
                     color: t::TEXT,
                 },
@@ -359,6 +366,10 @@ impl PreviewApp {
                     keyboard_profile: 0,
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
+                    dpi_stages: Vec::new(),
+                    min_dpi: 100,
+                    max_dpi: 18000,
+                    zones: Vec::new(),
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -386,7 +397,11 @@ impl PreviewApp {
                     keyboard_profile: 0,
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
-                    stat: ("18 000".into(), "DPI".into()),
+                    dpi_stages: Vec::new(),
+                    min_dpi: 100,
+                    max_dpi: 18000,
+                    zones: Vec::new(),
+                    stat: ("18000".into(), "DPI".into()),
                 },
                 Device {
                     name: "Scimitar Elite Wireless SE".into(),
@@ -413,7 +428,11 @@ impl PreviewApp {
                     keyboard_profile: 0,
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
-                    stat: ("1 600".into(), "DPI".into()),
+                    dpi_stages: Vec::new(),
+                    min_dpi: 100,
+                    max_dpi: 18000,
+                    zones: Vec::new(),
+                    stat: ("1600".into(), "DPI".into()),
                 },
                 Device {
                     name: "Commander PRO".into(),
@@ -440,7 +459,11 @@ impl PreviewApp {
                     keyboard_profile: 0,
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
-                    stat: ("1 240".into(), "Fan RPM".into()),
+                    dpi_stages: Vec::new(),
+                    min_dpi: 100,
+                    max_dpi: 18000,
+                    zones: Vec::new(),
+                    stat: ("1240".into(), "Fan RPM".into()),
                 },
                 Device {
                     name: "H115i RGB Platinum".into(),
@@ -467,6 +490,10 @@ impl PreviewApp {
                     keyboard_profile: 0,
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
+                    dpi_stages: Vec::new(),
+                    min_dpi: 100,
+                    max_dpi: 18000,
+                    zones: Vec::new(),
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
@@ -483,6 +510,9 @@ impl PreviewApp {
                 | DeviceAction::SaveKeyboardProfile
                 | DeviceAction::NewKeyboardProfile(_)
                 | DeviceAction::DeleteKeyboardProfile(_)
+                | DeviceAction::SaveDpi(_)
+                | DeviceAction::SaveDpiColors(_)
+                | DeviceAction::SaveZoneColors(_)
         );
         let message = match &action {
             DeviceAction::Profile(_) => "Profile updated",
@@ -495,6 +525,9 @@ impl PreviewApp {
             DeviceAction::SaveKeyboardProfile => "Keyboard profile saved",
             DeviceAction::NewKeyboardProfile(_) => "Keyboard profile created",
             DeviceAction::DeleteKeyboardProfile(_) => "Keyboard profile deleted",
+            DeviceAction::SaveDpi(_) => "DPI stages saved",
+            DeviceAction::SaveDpiColors(_) => "DPI colours saved",
+            DeviceAction::SaveZoneColors(_) => "Zone colours saved",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -517,6 +550,13 @@ impl PreviewApp {
             DeviceAction::NewKeyboardProfile(name) => api::new_keyboard_profile(&d.serial, &name),
             DeviceAction::DeleteKeyboardProfile(name) => {
                 api::delete_keyboard_profile(&d.serial, &name)
+            }
+            DeviceAction::SaveDpi(values) => api::save_mouse_dpi(&d.serial, &values),
+            DeviceAction::SaveDpiColors(colors) => {
+                api::save_mouse_dpi_colors(&d.serial, &colors)
+            }
+            DeviceAction::SaveZoneColors(colors) => {
+                api::save_mouse_zone_colors(&d.serial, &colors)
             }
             DeviceAction::Assignments => {
                 self.open_assignment_editor(idx);
@@ -800,6 +840,17 @@ impl PreviewApp {
                         .position(|p| *p == s.active_keyboard_profile)
                         .unwrap_or(0);
                 }
+                // Fill the mouse editor once. The poller runs every few seconds,
+                // so overwriting these would undo a value the user is editing
+                // before they press Save.
+                if d.dpi_stages.is_empty() {
+                    d.dpi_stages = s.dpi_stages.clone();
+                }
+                if d.zones.is_empty() {
+                    d.zones = s.zones.clone();
+                }
+                d.min_dpi = s.min_dpi;
+                d.max_dpi = s.max_dpi;
                 d.stat = (s.stat_value, s.stat_label);
                 next.push(d);
             } else {
@@ -868,6 +919,10 @@ impl PreviewApp {
                     keyboard_profiles: s.keyboard_profiles,
                     new_profile_name: String::new(),
                     assignment_types: s.assignment_types,
+                    dpi_stages: s.dpi_stages,
+                    min_dpi: s.min_dpi,
+                    max_dpi: s.max_dpi,
+                    zones: s.zones,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -1440,6 +1495,18 @@ impl PreviewApp {
                         action = Some(DeviceAction::Rgb(name));
                     }
                     ui.add_space(16.0);
+                    if !d.dpi_stages.is_empty() {
+                        if let Some(next) = dpi_card(ui, d) {
+                            action = Some(next);
+                        }
+                        ui.add_space(16.0);
+                    }
+                    if !d.zones.is_empty() {
+                        if let Some(next) = zones_card(ui, d) {
+                            action = Some(next);
+                        }
+                        ui.add_space(16.0);
+                    }
                     assignments_card(ui, d);
                 }
             });
@@ -2384,6 +2451,153 @@ fn lighting_card(
                 .color(t::DIM),
         );
     });
+}
+
+fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
+    if d.dpi_stages.is_empty() {
+        return None;
+    }
+    let mut save_dpi = false;
+    let mut save_colors = false;
+
+    t::card_padded(16).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                t::section_label(ui, "DPI");
+                ui.label(
+                    RichText::new("Sensitivity stages")
+                        .size(15.0)
+                        .strong()
+                        .color(t::WHITE),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                t::pill(ui, &format!("{} stages", d.dpi_stages.len()), t::MUTED);
+            });
+        });
+
+        ui.add_space(10.0);
+        let min = d.min_dpi.max(1);
+        let max = d.max_dpi.max(min);
+
+        for stage in d.dpi_stages.iter_mut() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let name_w = 62.0;
+                let value_w = 58.0;
+                let swatch_w = 28.0;
+                let track_w =
+                    (ui.available_width() - name_w - value_w - swatch_w - 24.0).max(80.0);
+
+                ui.allocate_ui_with_layout(
+                    Vec2::new(name_w, 28.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.label(RichText::new(&stage.name).size(11.0).color(t::MUTED));
+                    },
+                );
+
+                let mut value = stage.value as f32;
+                ui.allocate_ui_with_layout(
+                    Vec2::new(track_w, 28.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        if t::slider_plain(ui, &mut value, min as f32, max as f32) {
+                            stage.value =
+                                value.round().clamp(min as f32, max as f32) as u16;
+                        }
+                    },
+                );
+
+                let mut typed = stage.value as i32;
+                let resp = ui.add(
+                    egui::DragValue::new(&mut typed)
+                        .range(min as i32..=max as i32)
+                        .speed(10.0),
+                );
+                if resp.changed() {
+                    stage.value = typed.clamp(min as i32, max as i32) as u16;
+                }
+
+                egui::color_picker::color_edit_button_srgb(ui, &mut stage.color);
+            });
+            ui.add_space(2.0);
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if t::button(ui, "Save DPI", t::Btn::Success) {
+                save_dpi = true;
+            }
+            if t::button(ui, "Save DPI colours", t::Btn::Normal) {
+                save_colors = true;
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("DPI values and stage colours apply to OpenLinkHub.")
+                .size(10.5)
+                .italics()
+                .color(t::DIM),
+        );
+    });
+
+    if save_dpi {
+        Some(DeviceAction::SaveDpi(
+            d.dpi_stages.iter().map(|s| s.value).collect(),
+        ))
+    } else if save_colors {
+        Some(DeviceAction::SaveDpiColors(
+            d.dpi_stages.iter().map(|s| s.color).collect(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn zones_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
+    if d.zones.is_empty() {
+        return None;
+    }
+    let mut save = false;
+
+    t::card_padded(16).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                t::section_label(ui, "RGB");
+                ui.label(
+                    RichText::new("Zone colours")
+                        .size(15.0)
+                        .strong()
+                        .color(t::WHITE),
+                );
+            });
+        });
+
+        ui.add_space(10.0);
+        for zone in d.zones.iter_mut() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&zone.name).size(11.5).color(t::MUTED));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    egui::color_picker::color_edit_button_srgb(ui, &mut zone.color);
+                });
+            });
+            ui.add_space(2.0);
+        }
+
+        ui.add_space(8.0);
+        if t::button(ui, "Save zone colours", t::Btn::Success) {
+            save = true;
+        }
+    });
+
+    if save {
+        Some(DeviceAction::SaveZoneColors(
+            d.zones.iter().map(|z| z.color).collect(),
+        ))
+    } else {
+        None
+    }
 }
 
 fn assignments_card(ui: &mut Ui, d: &Device) {
