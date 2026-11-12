@@ -7,10 +7,12 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 
-const K65_CARD: &[u8] = include_bytes!("../../assets/k65/card.png");
+const K65_CARD: &[u8] = include_bytes!("../../assets/k65/card_thick.png");
 
 const DARKSTAR_TOP: &[u8] = include_bytes!("../../assets/darkstar_wireless/top.png");
 const DARKSTAR_SIDE: &[u8] = include_bytes!("../../assets/darkstar_wireless/side.png");
+const DARKSTAR_SIDE_CARD: &[u8] =
+    include_bytes!("../../assets/darkstar_wireless/side_card.png");
 const DARKSTAR_SIDE_BODY: &[u8] =
     include_bytes!("../../assets/darkstar_wireless/layers/side_body.png");
 const DARKSTAR_SIDE_BUTTONS: &[u8] =
@@ -18,6 +20,8 @@ const DARKSTAR_SIDE_BUTTONS: &[u8] =
 
 const SCIMITAR_WIRELESS_TOP: &[u8] = include_bytes!("../../assets/scimitar_wireless/top.png");
 const SCIMITAR_WIRELESS_SIDE: &[u8] = include_bytes!("../../assets/scimitar_wireless/side.png");
+const SCIMITAR_WIRELESS_SIDE_CARD: &[u8] =
+    include_bytes!("../../assets/scimitar_wireless/side_card.png");
 const SCIMITAR_WIRELESS_SIDE_BODY: &[u8] =
     include_bytes!("../../assets/scimitar_wireless/layers/side_body.png");
 const SCIMITAR_WIRELESS_SIDE_BUTTONS: &[u8] =
@@ -25,6 +29,8 @@ const SCIMITAR_WIRELESS_SIDE_BUTTONS: &[u8] =
 
 const SCIMITAR_WIRED_TOP: &[u8] = include_bytes!("../../assets/scimitar_wired/top.png");
 const SCIMITAR_WIRED_SIDE: &[u8] = include_bytes!("../../assets/scimitar_wired/side.png");
+const SCIMITAR_WIRED_SIDE_CARD: &[u8] =
+    include_bytes!("../../assets/scimitar_wired/side_card.png");
 const SCIMITAR_WIRED_SIDE_BODY: &[u8] =
     include_bytes!("../../assets/scimitar_wired/layers/side_body.png");
 const SCIMITAR_WIRED_SIDE_BUTTONS: &[u8] =
@@ -34,6 +40,7 @@ const SCIMITAR_WIRED_SIDE_BUTTONS: &[u8] =
 struct Art {
     top: (&'static str, &'static [u8]),
     side: (&'static str, &'static [u8]),
+    side_card: (&'static str, &'static [u8]),
     side_body: (&'static str, &'static [u8]),
     side_buttons: (&'static str, &'static [u8]),
 }
@@ -41,6 +48,7 @@ struct Art {
 static ART_DARKSTAR: Art = Art {
     top: ("darkstar-top", DARKSTAR_TOP),
     side: ("darkstar-side", DARKSTAR_SIDE),
+    side_card: ("darkstar-side-card", DARKSTAR_SIDE_CARD),
     side_body: ("darkstar-side-body", DARKSTAR_SIDE_BODY),
     side_buttons: ("darkstar-side-buttons", DARKSTAR_SIDE_BUTTONS),
 };
@@ -48,6 +56,7 @@ static ART_DARKSTAR: Art = Art {
 static ART_SCIMITAR_WIRELESS: Art = Art {
     top: ("scimitar-wireless-top", SCIMITAR_WIRELESS_TOP),
     side: ("scimitar-wireless-side", SCIMITAR_WIRELESS_SIDE),
+    side_card: ("scimitar-wireless-side-card", SCIMITAR_WIRELESS_SIDE_CARD),
     side_body: ("scimitar-wireless-side-body", SCIMITAR_WIRELESS_SIDE_BODY),
     side_buttons: ("scimitar-wireless-side-buttons", SCIMITAR_WIRELESS_SIDE_BUTTONS),
 };
@@ -55,6 +64,7 @@ static ART_SCIMITAR_WIRELESS: Art = Art {
 static ART_SCIMITAR_WIRED: Art = Art {
     top: ("scimitar-wired-top", SCIMITAR_WIRED_TOP),
     side: ("scimitar-wired-side", SCIMITAR_WIRED_SIDE),
+    side_card: ("scimitar-wired-side-card", SCIMITAR_WIRED_SIDE_CARD),
     side_body: ("scimitar-wired-side-body", SCIMITAR_WIRED_SIDE_BODY),
     side_buttons: ("scimitar-wired-side-buttons", SCIMITAR_WIRED_SIDE_BUTTONS),
 };
@@ -104,6 +114,12 @@ impl ArtCache {
     pub fn mouse_side(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
         let art = art_for(product)?;
         self.load(ctx, art.side.0, art.side.1)
+    }
+
+    /// Thicker side line art used on the small dashboard card.
+    pub fn mouse_side_card(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
+        let art = art_for(product)?;
+        self.load(ctx, art.side_card.0, art.side_card.1)
     }
 
     /// Side view split into body and side-button layers, for per-zone tinting.

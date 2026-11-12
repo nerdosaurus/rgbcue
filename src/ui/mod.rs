@@ -1935,7 +1935,7 @@ fn device_card(
                 }
             }
             Kind::Mouse => {
-                if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
+                if let Some(texture) = art.mouse_side_card(ui.ctx(), &d.name) {
                     draw_line_art(ui.painter(), rect.shrink2(Vec2::new(0.0, 4.0)), &texture, color);
                 } else {
                     icons::mouse(ui.painter(), rect, color, brightness, rainbow);
