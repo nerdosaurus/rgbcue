@@ -7,6 +7,8 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 
+const K65_CARD: &[u8] = include_bytes!("../../assets/k65/card.png");
+
 const DARKSTAR_TOP: &[u8] = include_bytes!("../../assets/darkstar_wireless/top.png");
 const DARKSTAR_SIDE: &[u8] = include_bytes!("../../assets/darkstar_wireless/side.png");
 const DARKSTAR_SIDE_BODY: &[u8] =
@@ -79,6 +81,15 @@ impl ArtCache {
     pub fn new() -> Self {
         Self {
             textures: HashMap::new(),
+        }
+    }
+
+    /// Keyboard card art, if present.
+    pub fn keyboard_card(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
+        if product.to_uppercase().contains("K65") {
+            self.load(ctx, "k65-card", K65_CARD)
+        } else {
+            None
         }
     }
 

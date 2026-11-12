@@ -1922,7 +1922,18 @@ fn device_card(
         let color = Color32::from_rgb(80, 180, 255);
         let rainbow = matches!(d.effect, 1 | 7);
         match d.kind {
-            Kind::Keyboard => icons::keyboard(ui.painter(), rect, color, brightness, rainbow),
+            Kind::Keyboard => {
+                if let Some(texture) = art.keyboard_card(ui.ctx(), &d.name) {
+                    draw_line_art(
+                        ui.painter(),
+                        rect.shrink2(Vec2::new(0.0, 4.0)),
+                        &texture,
+                        color,
+                    );
+                } else {
+                    icons::keyboard(ui.painter(), rect, color, brightness, rainbow);
+                }
+            }
             Kind::Mouse => {
                 if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
                     draw_line_art(ui.painter(), rect.shrink2(Vec2::new(0.0, 4.0)), &texture, color);
