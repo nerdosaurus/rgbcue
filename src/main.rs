@@ -1025,7 +1025,7 @@ fn command_editor(
 }
 
 /// Query the global cursor position via X11 (one-shot).
-fn query_cursor() -> Option<(i32, i32)> {
+pub(crate) fn query_cursor() -> Option<(i32, i32)> {
     use x11_dl::xlib;
     unsafe {
         let Ok(xlib) = xlib::Xlib::open() else {

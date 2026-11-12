@@ -8,12 +8,13 @@ pub mod icons;
 pub mod theme;
 
 use crate::api;
+use assets::{ArtCache, draw_line_art};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, ScrollArea, Sense,
     Stroke, StrokeKind, Ui, Vec2,
 };
-use assets::{draw_line_art, ArtCache};
 use icons::Icon;
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use theme as t;
@@ -229,6 +230,23 @@ struct FlashTapModal {
     options: Vec<(String, String)>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ActionEdit {
+    hold: bool,
+    repeat: u8,
+    repeat_delay: u16,
+}
+
+/// Action types offered by the macro editor, in display order.
+const MACRO_TYPES: &[(u8, &str)] = &[
+    (api::ACTION_KEYBOARD, "Keyboard"),
+    (api::ACTION_MEDIA, "Media key"),
+    (api::ACTION_DELAY, "Delay"),
+    (api::ACTION_TEXT, "Text"),
+    (api::ACTION_MOUSE, "Mouse"),
+    (api::ACTION_MOUSE_POSITION, "Mouse position"),
+];
+
 enum DeviceAction {
     Profile(String),
     Rgb(String),
@@ -318,7 +336,31 @@ struct PreviewApp {
     monitor_order: Vec<usize>,
     device_order: Vec<usize>,
     color: [u8; 3],
-    macro_sel: usize,
+    macros: Vec<api::Macro>,
+    macro_sel: Option<i32>,
+    macro_dirty: bool,
+    new_macro_name: String,
+    new_action_type_idx: usize,
+    new_action_command: u16,
+    new_action_delay: u16,
+    new_action_text: String,
+    new_action_enter: bool,
+    new_action_x: i32,
+    new_action_y: i32,
+    new_action_abs: bool,
+    macro_keys: Vec<(u16, String)>,
+    macro_media: Vec<(u16, String)>,
+    macro_mouse: Vec<(u16, String)>,
+    macro_keys_loaded: bool,
+    macro_repeat_loop: bool,
+    macro_repeat_count: i32,
+    macro_repeat_delay: i32,
+    macro_edit_id: Option<i32>,
+    selected_action: Option<i32>,
+    action_edits: HashMap<i32, ActionEdit>,
+    text_delay: i32,
+    text_variance: i32,
+    delay_variance: i32,
     theme_idx: usize,
     lang_idx: usize,
     celsius: bool,
@@ -343,7 +385,31 @@ impl PreviewApp {
             page,
             collapsed: false,
             color: [80, 180, 255],
-            macro_sel: 0,
+            macros: Vec::new(),
+            macro_sel: None,
+            macro_dirty: true,
+            new_macro_name: String::new(),
+            new_action_type_idx: 0,
+            new_action_command: 0,
+            new_action_delay: 100,
+            new_action_text: String::new(),
+            new_action_enter: false,
+            new_action_x: 0,
+            new_action_y: 0,
+            new_action_abs: true,
+            macro_keys: Vec::new(),
+            macro_media: Vec::new(),
+            macro_mouse: Vec::new(),
+            macro_keys_loaded: false,
+            macro_repeat_loop: false,
+            macro_repeat_count: 0,
+            macro_repeat_delay: 0,
+            macro_edit_id: None,
+            selected_action: None,
+            action_edits: HashMap::new(),
+            text_delay: 40,
+            text_variance: 0,
+            delay_variance: 0,
             theme_idx: 0,
             lang_idx: 0,
             celsius: true,
@@ -1538,7 +1604,7 @@ impl PreviewApp {
                 "{} · firmware {}",
                 self.devices[i].serial, self.devices[i].firmware
             ),
-            Page::Macros => "4 profiles · 6 macros".into(),
+            Page::Macros => format!("{} macros", self.macros.len()),
             Page::Settings => "Dashboard and application preferences".into(),
             _ => "OpenLinkHub 0.9.5".into(),
         }
@@ -1802,6 +1868,7 @@ impl PreviewApp {
                 ui.add_space(4.0);
                 if t::button(ui, "Refresh", t::Btn::Ghost) {
                     let _ = self.refresh_tx.send(());
+                    self.macro_dirty = true;
                 }
             });
         });
@@ -2180,13 +2247,125 @@ impl PreviewApp {
 
     // ---- macros ------------------------------------------------------------
 
+    fn ensure_macros(&mut self) {
+        if !self.macro_dirty {
+            return;
+        }
+        self.macro_dirty = false;
+        match api::fetch_macros() {
+            Ok(macros) => {
+                self.macros = macros;
+                if let Some(sel) = self.macro_sel
+                    && !self.macros.iter().any(|m| m.id == sel)
+                {
+                    self.macro_sel = None;
+                }
+                if self.macro_sel.is_none() {
+                    self.macro_sel = self.macros.first().map(|m| m.id);
+                }
+            }
+            Err(err) => self.notice = Some((err, false)),
+        }
+    }
+
+    fn ensure_macro_keys(&mut self) {
+        if self.macro_keys_loaded {
+            return;
+        }
+        self.macro_keys_loaded = true;
+        let pairs = |v: Result<Vec<(u16, api::InputKey)>, String>| -> Vec<(u16, String)> {
+            v.map(|v| v.into_iter().map(|(i, k)| (i, k.name)).collect())
+                .unwrap_or_default()
+        };
+        self.macro_keys = pairs(api::fetch_keyboard_keys());
+        self.macro_media = pairs(api::fetch_media_keys());
+        self.macro_mouse = pairs(api::fetch_mouse_buttons());
+    }
+
+    fn macro_enter_index(&self) -> u16 {
+        self.macro_keys
+            .iter()
+            .find(|(_, name)| name == "Enter")
+            .map(|(i, _)| *i)
+            .unwrap_or(68)
+    }
+
+    fn macro_command_name(&self, ty: u8, command: u16) -> Option<String> {
+        let list = match ty {
+            api::ACTION_KEYBOARD => &self.macro_keys,
+            api::ACTION_MEDIA => &self.macro_media,
+            api::ACTION_MOUSE => &self.macro_mouse,
+            _ => return None,
+        };
+        list.iter()
+            .find(|(i, _)| *i == command)
+            .map(|(_, name)| name.clone())
+    }
+
+    fn macro_action_label(&self, idx: i32, a: &api::MacroAction) -> String {
+        match a.action_type {
+            api::ACTION_DELAY => format!("{idx} · {} ms", a.action_delay),
+            api::ACTION_TEXT => {
+                let text = a.action_text.trim();
+                if text.is_empty() {
+                    format!("{idx} · Text")
+                } else {
+                    format!("{idx} · {text}")
+                }
+            }
+            api::ACTION_MOUSE_POSITION => {
+                format!("{idx} · {},{}", a.mouse_position_x, a.mouse_position_y)
+            }
+            _ => {
+                let name = self
+                    .macro_command_name(a.action_type, a.action_command)
+                    .unwrap_or_else(|| format!("cmd {}", a.action_command));
+                format!("{idx} · {name}")
+            }
+        }
+    }
+
     fn macros_page(&mut self, ui: &mut Ui) {
-        let macros: [(&str, usize, &str); 4] = [
-            ("FPS Tap", 6, "Default"),
-            ("Text Snippet", 3, "Default"),
-            ("Media Control", 5, "Media"),
-            ("DPI Toggle", 2, "FPS"),
-        ];
+        self.ensure_macros();
+        self.ensure_macro_keys();
+
+        // Refresh the repeat/action edit buffers when the selection changes.
+        if let Some(id) = self.macro_sel
+            && self.macro_edit_id != Some(id)
+            && let Some(m) = self.macros.iter().find(|m| m.id == id).cloned()
+        {
+            self.macro_edit_id = Some(id);
+            self.macro_repeat_loop = m.repeat < 0;
+            self.macro_repeat_count = m.repeat.max(0);
+            self.macro_repeat_delay = m.repeat_delay;
+            self.selected_action = None;
+            self.action_edits.clear();
+            for (idx, a) in api::ordered_actions(&m) {
+                self.action_edits.insert(
+                    idx,
+                    ActionEdit {
+                        hold: a.action_hold,
+                        repeat: a.action_repeat,
+                        repeat_delay: a.action_repeat_delay,
+                    },
+                );
+            }
+        }
+
+        let mut select_macro: Option<i32> = None;
+        let mut create_macro: Option<String> = None;
+        let mut delete_macro: Option<i32> = None;
+        let mut save_repeat: Option<(i32, i32, i32)> = None;
+        let mut select_action: Option<i32> = None;
+        let mut delete_action: Option<(i32, i32)> = None;
+        let mut save_action: Option<(i32, i32, bool, u8, u16)> = None;
+        let mut move_action: Option<(i32, i32, i32)> = None;
+        let mut add_action: Option<(i32, api::MacroAction)> = None;
+        let mut save_text_settings = false;
+
+        let keys = self.macro_keys.clone();
+        let media = self.macro_media.clone();
+        let mouse = self.macro_mouse.clone();
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -2195,15 +2374,19 @@ impl PreviewApp {
                 |ui| {
                     ui.set_width(300.0);
                     t::card_padded(14).show(ui, |ui| {
-                        ui.set_width(300.0);
+                        ui.set_width(272.0);
                         t::section_label(ui, "Macros");
                         ui.add_space(8.0);
-                        for (i, (name, actions, profile)) in macros.iter().enumerate() {
+
+                        if self.macros.is_empty() {
+                            ui.label(RichText::new("No macros yet.").size(11.5).color(t::MUTED));
+                        }
+                        for m in &self.macros {
                             let (rect, resp) = ui.allocate_exact_size(
                                 Vec2::new(ui.available_width(), 52.0),
                                 Sense::click(),
                             );
-                            if self.macro_sel == i {
+                            if self.macro_sel == Some(m.id) {
                                 ui.painter().rect_filled(
                                     rect,
                                     CornerRadius::same(10),
@@ -2225,21 +2408,51 @@ impl PreviewApp {
                             ui.painter().text(
                                 egui::pos2(rect.left() + 12.0, rect.top() + 16.0),
                                 Align2::LEFT_CENTER,
-                                *name,
+                                &m.name,
                                 FontId::proportional(13.0),
                                 t::TEXT,
                             );
+                            let repeat = if m.repeat < 0 {
+                                "loop".to_string()
+                            } else {
+                                format!("{}x", m.repeat)
+                            };
                             ui.painter().text(
                                 egui::pos2(rect.left() + 12.0, rect.top() + 34.0),
                                 Align2::LEFT_CENTER,
-                                format!("{actions} actions · {profile}"),
+                                format!("{} actions · {repeat}", m.actions.len()),
                                 FontId::proportional(10.5),
                                 t::MUTED,
                             );
                             if resp.clicked() {
-                                self.macro_sel = i;
+                                select_macro = Some(m.id);
                             }
                             ui.add_space(2.0);
+                        }
+
+                        ui.add_space(10.0);
+                        t::divider(ui);
+                        ui.add_space(8.0);
+                        t::section_label(ui, "New macro");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_macro_name)
+                                    .hint_text("Name")
+                                    .desired_width(152.0)
+                                    .text_color(t::TEXT),
+                            );
+                            if t::button(ui, "Create", t::Btn::Success) {
+                                let name = self.new_macro_name.trim().to_string();
+                                if !name.is_empty() {
+                                    create_macro = Some(name);
+                                }
+                            }
+                        });
+                        if let Some(id) = self.macro_sel {
+                            ui.add_space(8.0);
+                            if t::button(ui, "Delete macro", t::Btn::Danger) {
+                                delete_macro = Some(id);
+                            }
                         }
                     });
                 },
@@ -2248,80 +2461,405 @@ impl PreviewApp {
             ui.add_space(16.0);
 
             ui.vertical(|ui| {
-                let (name, actions, profile) = macros[self.macro_sel];
+                let Some(id) = self.macro_sel else {
+                    t::card_padded(16).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new("Create or select a macro to edit it.")
+                                .size(13.0)
+                                .color(t::MUTED),
+                        );
+                    });
+                    return;
+                };
+                let Some(m) = self.macros.iter().find(|m| m.id == id).cloned() else {
+                    return;
+                };
+
                 t::card_padded(16).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             t::section_label(ui, "Macro");
-                            ui.label(RichText::new(name).size(18.0).strong().color(t::WHITE));
+                            ui.label(RichText::new(&m.name).size(18.0).strong().color(t::WHITE));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            t::pill(ui, profile, t::MUTED);
+                            t::pill(ui, &format!("{} actions", m.actions.len()), t::MUTED);
                         });
                     });
                     ui.add_space(10.0);
                     t::divider(ui);
                     ui.add_space(8.0);
 
-                    let rows: [(&str, &str, &str); 6] = [
-                        ("Key", "W", "keyboard"),
-                        ("Delay", "40 ms", "delay"),
-                        ("Key", "A", "keyboard"),
-                        ("Delay", "40 ms", "delay"),
-                        ("Key", "S", "keyboard"),
-                        ("Delay", "40 ms", "delay"),
-                    ];
-                    for (kind, value, _) in rows.iter().take(actions.min(rows.len())) {
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 34.0),
-                            Sense::hover(),
-                        );
-                        t::hairline(
-                            ui.painter(),
-                            rect.top(),
-                            rect.left(),
-                            rect.right(),
-                            t::BORDER,
-                        );
-                        let badge = Rect::from_min_size(
-                            egui::pos2(rect.left() + 4.0, rect.center().y - 9.0),
-                            Vec2::new(64.0, 18.0),
-                        );
-                        ui.painter().rect_filled(
-                            badge,
-                            CornerRadius::same(5),
-                            Color32::from_rgba_unmultiplied(255, 255, 255, 12),
-                        );
-                        ui.painter().text(
-                            badge.center(),
-                            Align2::CENTER_CENTER,
-                            *kind,
-                            FontId::proportional(10.0),
-                            t::MUTED,
-                        );
-                        ui.painter().text(
-                            egui::pos2(rect.left() + 84.0, rect.center().y),
-                            Align2::LEFT_CENTER,
-                            *value,
-                            FontId::monospace(11.5),
-                            t::TEXT,
+                    t::section_label(ui, "Playback");
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Loop").size(11.5).color(t::TEXT));
+                        t::switch(ui, &mut self.macro_repeat_loop);
+                        ui.add_space(12.0);
+                        if !self.macro_repeat_loop {
+                            ui.label(RichText::new("Repeat").size(11.5).color(t::MUTED));
+                            let mut count = self.macro_repeat_count;
+                            if ui
+                                .add(egui::DragValue::new(&mut count).range(0..=9999).speed(1.0))
+                                .changed()
+                            {
+                                self.macro_repeat_count = count.clamp(0, 9999);
+                            }
+                            ui.label(RichText::new("times").size(11.5).color(t::MUTED));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Delay").size(11.5).color(t::MUTED));
+                        let mut delay = self.macro_repeat_delay;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut delay)
+                                    .range(0..=60000)
+                                    .speed(10.0)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.macro_repeat_delay = delay.clamp(0, 60000);
+                        }
+                        if t::button(ui, "Save", t::Btn::Normal) {
+                            let repeat = if self.macro_repeat_loop {
+                                -1
+                            } else {
+                                self.macro_repeat_count
+                            };
+                            save_repeat = Some((id, repeat, self.macro_repeat_delay));
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    t::divider(ui);
+                    ui.add_space(8.0);
+                    t::section_label(ui, "Actions");
+                    ui.add_space(4.0);
+
+                    let full: Vec<(i32, api::MacroAction)> = api::ordered_actions(&m)
+                        .into_iter()
+                        .map(|(idx, a)| (idx, a.clone()))
+                        .collect();
+                    if full.is_empty() {
+                        ui.label(
+                            RichText::new("No actions yet. Add one below.")
+                                .size(11.5)
+                                .color(t::MUTED),
                         );
                     }
-
-                    ui.add_space(14.0);
-                    ui.horizontal(|ui| {
-                        let _ = t::button(ui, "Save", t::Btn::Success);
-                        let _ = t::button(ui, "Duplicate", t::Btn::Normal);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let _ = t::button(ui, "Delete", t::Btn::Danger);
+                    for (idx, a) in &full {
+                        ui.horizontal(|ui| {
+                            let (badge, _) =
+                                ui.allocate_exact_size(Vec2::new(74.0, 18.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                badge,
+                                CornerRadius::same(5),
+                                Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+                            );
+                            ui.painter().text(
+                                badge.center(),
+                                Align2::CENTER_CENTER,
+                                api::action_type_label(a.action_type),
+                                FontId::proportional(10.0),
+                                t::MUTED,
+                            );
+                            ui.label(
+                                RichText::new(self.macro_action_label(*idx, a))
+                                    .size(11.5)
+                                    .color(if self.selected_action == Some(*idx) {
+                                        t::GOLD
+                                    } else {
+                                        t::TEXT
+                                    }),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if t::button(ui, "Delete", t::Btn::Danger) {
+                                    delete_action = Some((id, *idx));
+                                }
+                                if t::button(ui, "↓", t::Btn::Ghost) {
+                                    move_action = Some((id, *idx, 1));
+                                }
+                                if t::button(ui, "↑", t::Btn::Ghost) {
+                                    move_action = Some((id, *idx, -1));
+                                }
+                                if t::button(ui, "Edit", t::Btn::Normal) {
+                                    select_action = Some(*idx);
+                                }
+                            });
                         });
+                        ui.add_space(2.0);
+                    }
+
+                    if let Some(aidx) = self.selected_action {
+                        ui.add_space(8.0);
+                        t::divider(ui);
+                        ui.add_space(8.0);
+                        t::section_label(ui, &format!("Action {aidx}"));
+                        let edit = self.action_edits.entry(aidx).or_default();
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Press and hold").size(11.5).color(t::TEXT));
+                            t::switch(ui, &mut edit.hold);
+                            ui.add_space(12.0);
+                            ui.label(RichText::new("Repeat").size(11.5).color(t::MUTED));
+                            let mut repeat = edit.repeat as i32;
+                            if ui
+                                .add(egui::DragValue::new(&mut repeat).range(0..=255))
+                                .changed()
+                            {
+                                edit.repeat = repeat.clamp(0, 255) as u8;
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Repeat delay").size(11.5).color(t::MUTED));
+                            let mut delay = edit.repeat_delay as i32;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut delay)
+                                        .range(0..=60000)
+                                        .suffix(" ms"),
+                                )
+                                .changed()
+                            {
+                                edit.repeat_delay = delay.clamp(0, 60000) as u16;
+                            }
+                            if t::button(ui, "Save action", t::Btn::Success) {
+                                save_action =
+                                    Some((id, aidx, edit.hold, edit.repeat, edit.repeat_delay));
+                            }
+                        });
+                    }
+
+                    ui.add_space(12.0);
+                    t::divider(ui);
+                    ui.add_space(8.0);
+                    t::section_label(ui, "Add action");
+                    ui.add_space(4.0);
+
+                    let type_names: Vec<&str> = MACRO_TYPES.iter().map(|(_, name)| *name).collect();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Type").size(11.5).color(t::MUTED));
+                        t::select(ui, &type_names, &mut self.new_action_type_idx);
                     });
+                    let ty = MACRO_TYPES[self.new_action_type_idx].0;
+                    ui.add_space(4.0);
+                    macro_command_editor(
+                        ui,
+                        ty,
+                        &mut self.new_action_command,
+                        &mut self.new_action_delay,
+                        &mut self.new_action_text,
+                        &mut self.new_action_x,
+                        &mut self.new_action_y,
+                        &mut self.new_action_abs,
+                        &keys,
+                        &media,
+                        &mouse,
+                    );
+                    if ty == api::ACTION_TEXT {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Send Enter after text")
+                                    .size(11.5)
+                                    .color(t::TEXT),
+                            );
+                            t::switch(ui, &mut self.new_action_enter);
+                        });
+                    }
+                    ui.add_space(6.0);
+                    if t::button(ui, "Add action", t::Btn::Success) {
+                        let action = api::MacroAction {
+                            action_type: ty,
+                            action_command: self.new_action_command,
+                            action_delay: if ty == api::ACTION_DELAY {
+                                self.new_action_delay
+                            } else {
+                                0
+                            },
+                            action_text: self.new_action_text.clone(),
+                            mouse_position_x: self.new_action_x,
+                            mouse_position_y: self.new_action_y,
+                            mouse_position_absolute: self.new_action_abs,
+                            ..Default::default()
+                        };
+                        add_action = Some((id, action));
+                    }
+                });
+
+                ui.add_space(16.0);
+
+                t::card_padded(16).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    t::section_label(ui, "Typing & delay");
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Char delay").size(11.5).color(t::MUTED));
+                        let mut delay = self.text_delay;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut delay)
+                                    .range(10..=1000)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.text_delay = delay.clamp(10, 1000);
+                        }
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("Jitter").size(11.5).color(t::MUTED));
+                        let mut variance = self.text_variance;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut variance)
+                                    .range(0..=500)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.text_variance = variance.clamp(0, 500);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Delay jitter").size(11.5).color(t::MUTED));
+                        let mut variance = self.delay_variance;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut variance)
+                                    .range(0..=500)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.delay_variance = variance.clamp(0, 500);
+                        }
+                        if t::button(ui, "Save", t::Btn::Normal) {
+                            save_text_settings = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Applies to text typed by macros and to delay actions.")
+                            .size(10.5)
+                            .italics()
+                            .color(t::DIM),
+                    );
                 });
             });
         });
-    }
 
-    // ---- settings ----------------------------------------------------------
+        if let Some(id) = select_macro {
+            self.macro_sel = Some(id);
+        }
+        if let Some(name) = create_macro {
+            match api::create_macro(&name) {
+                Ok(()) => {
+                    self.notice = Some((format!("Created \"{name}\""), true));
+                    self.new_macro_name.clear();
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some(id) = delete_macro {
+            match api::delete_macro(id) {
+                Ok(()) => {
+                    self.notice = Some(("Macro deleted".into(), true));
+                    if self.macro_sel == Some(id) {
+                        self.macro_sel = None;
+                        self.macro_edit_id = None;
+                    }
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some((id, repeat, delay)) = save_repeat {
+            match api::update_macro_settings(id, repeat, delay) {
+                Ok(()) => {
+                    self.notice = Some(("Playback saved".into(), true));
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some(id) = select_action {
+            self.selected_action = Some(id);
+        }
+        if let Some((id, aidx)) = delete_action {
+            match api::delete_macro_action(id, aidx) {
+                Ok(()) => {
+                    self.notice = Some(("Action deleted".into(), true));
+                    self.action_edits.remove(&aidx);
+                    if self.selected_action == Some(aidx) {
+                        self.selected_action = None;
+                    }
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some((id, aidx, hold, repeat, delay)) = save_action {
+            match api::update_macro_action(id, aidx, hold, repeat, delay) {
+                Ok(()) => {
+                    self.notice = Some(("Action saved".into(), true));
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if let Some((id, aidx, dir)) = move_action
+            && let Some(m) = self.macros.iter().find(|m| m.id == id).cloned()
+        {
+            let mut ordered: Vec<(i32, api::MacroAction)> = api::ordered_actions(&m)
+                .into_iter()
+                .map(|(idx, a)| (idx, a.clone()))
+                .collect();
+            if let Some(pos) = ordered.iter().position(|(i, _)| *i == aidx) {
+                let target = pos as i32 + dir;
+                if target >= 0 && target < ordered.len() as i32 {
+                    ordered.swap(pos, target as usize);
+                    let indices: Vec<i32> =
+                        api::ordered_actions(&m).iter().map(|(i, _)| *i).collect();
+                    let actions: Vec<api::MacroAction> =
+                        ordered.iter().map(|(_, a)| a.clone()).collect();
+                    match api::reorder_macro_actions(id, &indices, &actions) {
+                        Ok(()) => {
+                            self.notice = Some(("Actions reordered".into(), true));
+                            self.macro_dirty = true;
+                        }
+                        Err(err) => self.notice = Some((err, false)),
+                    }
+                }
+            }
+        }
+        if let Some((id, action)) = add_action {
+            let mut result = api::add_macro_action(id, &action);
+            if result.is_ok() && action.action_type == api::ACTION_TEXT && self.new_action_enter {
+                let enter = api::MacroAction {
+                    action_type: api::ACTION_KEYBOARD,
+                    action_command: self.macro_enter_index(),
+                    ..Default::default()
+                };
+                result = api::add_macro_action(id, &enter);
+            }
+            match result {
+                Ok(()) => {
+                    self.notice = Some(("Action added".into(), true));
+                    self.new_action_text.clear();
+                    self.macro_dirty = true;
+                }
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if save_text_settings {
+            match api::set_text_delay(self.text_delay, self.text_variance, self.delay_variance) {
+                Ok(()) => self.notice = Some(("Typing settings saved".into(), true)),
+                Err(err) => self.notice = Some((err, false)),
+            }
+        }
+    }
 
     fn settings_page(&mut self, ui: &mut Ui) {
         ui.allocate_ui_with_layout(
@@ -2654,7 +3192,12 @@ fn device_card(
             }
             Kind::Mouse => {
                 if let Some(texture) = art.mouse_side_card(ui.ctx(), &d.name) {
-                    draw_line_art(ui.painter(), rect.shrink2(Vec2::new(0.0, 4.0)), &texture, color);
+                    draw_line_art(
+                        ui.painter(),
+                        rect.shrink2(Vec2::new(0.0, 4.0)),
+                        &texture,
+                        color,
+                    );
                 } else {
                     icons::mouse(ui.painter(), rect, color, brightness, rainbow);
                 }
@@ -3347,6 +3890,78 @@ fn assignments_card(ui: &mut Ui, d: &Device) -> Option<DeviceAction> {
         }
     });
     edit.map(DeviceAction::EditAssignment)
+}
+
+fn macro_command_editor(
+    ui: &mut Ui,
+    ty: u8,
+    command: &mut u16,
+    delay: &mut u16,
+    text: &mut String,
+    x: &mut i32,
+    y: &mut i32,
+    abs: &mut bool,
+    keys: &[(u16, String)],
+    media: &[(u16, String)],
+    mouse: &[(u16, String)],
+) {
+    match ty {
+        api::ACTION_KEYBOARD | api::ACTION_MEDIA | api::ACTION_MOUSE => {
+            let list = match ty {
+                api::ACTION_KEYBOARD => keys,
+                api::ACTION_MEDIA => media,
+                _ => mouse,
+            };
+            let names: Vec<String> = list.iter().map(|(_, name)| name.clone()).collect();
+            if names.is_empty() {
+                ui.label(RichText::new("Loading entries…").size(11.0).color(t::MUTED));
+                return;
+            }
+            let mut idx = list.iter().position(|(i, _)| *i == *command).unwrap_or(0);
+            if t::select_strings(ui, &names, &mut idx) {
+                *command = list[idx].0;
+            }
+        }
+        api::ACTION_DELAY => {
+            let mut value = *delay as i32;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut value)
+                        .range(0..=60000)
+                        .suffix(" ms"),
+                )
+                .changed()
+            {
+                *delay = value.clamp(0, 60000) as u16;
+            }
+        }
+        api::ACTION_TEXT => {
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .hint_text("Text to type")
+                    .desired_width(360.0)
+                    .desired_rows(2)
+                    .text_color(t::TEXT),
+            );
+        }
+        api::ACTION_MOUSE_POSITION => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("X").size(11.0).color(t::MUTED));
+                ui.add(egui::DragValue::new(x).range(-10000..=10000));
+                ui.label(RichText::new("Y").size(11.0).color(t::MUTED));
+                ui.add(egui::DragValue::new(y).range(-10000..=10000));
+                if t::button(ui, "Use cursor", t::Btn::Normal)
+                    && let Some((cx, cy)) = crate::query_cursor()
+                {
+                    *x = cx;
+                    *y = cy;
+                }
+                ui.label(RichText::new("Absolute").size(11.0).color(t::MUTED));
+                t::switch(ui, abs);
+            });
+        }
+        _ => {}
+    }
 }
 
 fn button_action_label(d: &Device, button: &api::MouseButton) -> String {
