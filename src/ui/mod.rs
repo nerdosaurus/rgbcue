@@ -128,6 +128,7 @@ struct Device {
     min_dpi: u16,
     max_dpi: u16,
     zones: Vec<api::ZoneColor>,
+    mouse_buttons: Vec<api::MouseButton>,
     stat: (String, String),
 }
 
@@ -173,6 +174,7 @@ struct AssignmentEditor {
     serial: String,
     key_index: i32,
     key_name: String,
+    mouse: bool,
     types: Vec<(i32, String)>,
     type_idx: usize,
     values: Vec<(String, String)>,
@@ -204,6 +206,7 @@ enum DeviceAction {
     SaveDpi(Vec<u16>),
     SaveDpiColors(Vec<[u8; 3]>),
     SaveZoneColors(Vec<[u8; 3]>),
+    EditAssignment(i32),
     Assignments,
     Add,
     Remove,
@@ -370,6 +373,7 @@ impl PreviewApp {
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
+                    mouse_buttons: Vec::new(),
                     stat: ("1000 Hz".into(), "Polling rate".into()),
                 },
                 Device {
@@ -401,6 +405,7 @@ impl PreviewApp {
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
+                    mouse_buttons: Vec::new(),
                     stat: ("18000".into(), "DPI".into()),
                 },
                 Device {
@@ -432,6 +437,7 @@ impl PreviewApp {
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
+                    mouse_buttons: Vec::new(),
                     stat: ("1600".into(), "DPI".into()),
                 },
                 Device {
@@ -463,6 +469,7 @@ impl PreviewApp {
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
+                    mouse_buttons: Vec::new(),
                     stat: ("1240".into(), "Fan RPM".into()),
                 },
                 Device {
@@ -494,6 +501,7 @@ impl PreviewApp {
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
+                    mouse_buttons: Vec::new(),
                     stat: ("32 °C".into(), "Coolant".into()),
                 },
             ],
@@ -528,6 +536,7 @@ impl PreviewApp {
             DeviceAction::SaveDpi(_) => "DPI stages saved",
             DeviceAction::SaveDpiColors(_) => "DPI colours saved",
             DeviceAction::SaveZoneColors(_) => "Zone colours saved",
+            DeviceAction::EditAssignment(_) => "Key assignment",
             DeviceAction::Assignments => "Key assignments",
             DeviceAction::Add => "Added to dashboard",
             DeviceAction::Remove => "Removed from dashboard",
@@ -552,14 +561,18 @@ impl PreviewApp {
                 api::delete_keyboard_profile(&d.serial, &name)
             }
             DeviceAction::SaveDpi(values) => api::save_mouse_dpi(&d.serial, &values),
-            DeviceAction::SaveDpiColors(colors) => {
-                api::save_mouse_dpi_colors(&d.serial, &colors)
-            }
-            DeviceAction::SaveZoneColors(colors) => {
-                api::save_mouse_zone_colors(&d.serial, &colors)
-            }
+            DeviceAction::SaveDpiColors(colors) => api::save_mouse_dpi_colors(&d.serial, &colors),
+            DeviceAction::SaveZoneColors(colors) => api::save_mouse_zone_colors(&d.serial, &colors),
             DeviceAction::Assignments => {
-                self.open_assignment_editor(idx);
+                let Some(key_index) = d.selected_key else {
+                    self.notice = Some(("Select a key first".into(), false));
+                    return;
+                };
+                self.open_assignment_editor(idx, key_index);
+                return;
+            }
+            DeviceAction::EditAssignment(key_index) => {
+                self.open_assignment_editor(idx, key_index);
                 return;
             }
             DeviceAction::Add => api::add_dashboard_device(&d.serial),
@@ -574,19 +587,36 @@ impl PreviewApp {
         }
     }
 
-    fn open_assignment_editor(&mut self, idx: usize) {
+    fn open_assignment_editor(&mut self, idx: usize, key_index: i32) {
         let d = &self.devices[idx];
-        let Some(key_index) = d.selected_key else {
-            self.notice = Some(("Select a key first".into(), false));
-            return;
-        };
-        let Some(key) = d.keyboard.as_ref().and_then(|layout| {
+        let keyboard_key = d.keyboard.as_ref().and_then(|layout| {
             layout
                 .rows
                 .iter()
                 .flat_map(|row| row.keys.iter())
                 .find(|key| key.index == key_index)
-        }) else {
+                .cloned()
+        });
+        let mouse = d.kind == Kind::Mouse;
+        let key = if let Some(key) = keyboard_key {
+            key
+        } else if let Some(button) = d.mouse_buttons.iter().find(|b| b.index == key_index) {
+            api::KeyCap {
+                name: button.name.clone(),
+                sub: String::new(),
+                span: 1.0,
+                color: [255, 255, 255],
+                index: button.index,
+                row: 0,
+                action_type: button.action_type,
+                action_command: button.action_command,
+                action_hold: button.action_hold,
+                default: button.default,
+                retain_original: button.retain_original,
+                modifier_key: button.modifier_key,
+                toggle_delay: button.toggle_delay,
+            }
+        } else {
             self.notice = Some(("No key data for this key".into(), false));
             return;
         };
@@ -615,6 +645,7 @@ impl PreviewApp {
             serial: d.serial.clone(),
             key_index,
             key_name: key.name.clone(),
+            mouse,
             types,
             type_idx,
             values,
@@ -781,7 +812,12 @@ impl PreviewApp {
             } else {
                 (raw.parse::<i64>().ok(), None)
             };
-            match api::update_key_assignment(
+            let update = if editor.mouse {
+                api::update_mouse_assignment
+            } else {
+                api::update_key_assignment
+            };
+            match update(
                 &editor.serial,
                 editor.key_index,
                 editor.default,
@@ -795,6 +831,26 @@ impl PreviewApp {
             ) {
                 Ok(()) => {
                     self.notice = Some(("Key assignment updated".into(), true));
+                    if editor.mouse
+                        && let Some(button) = self
+                            .devices
+                            .iter_mut()
+                            .find(|d| d.serial == editor.serial)
+                            .and_then(|d| {
+                                d.mouse_buttons
+                                    .iter_mut()
+                                    .find(|b| b.index == editor.key_index)
+                            })
+                    {
+                        button.default = editor.default;
+                        button.action_hold = editor.hold;
+                        button.action_type = type_code as u8;
+                        if value_string.is_none() {
+                            button.action_command = value.unwrap_or(0) as u16;
+                        }
+                        button.retain_original = editor.retain_original;
+                        button.toggle_delay = toggle_delay;
+                    }
                     let _ = self.refresh_tx.send(());
                 }
                 Err(err) => self.notice = Some((err, false)),
@@ -849,6 +905,9 @@ impl PreviewApp {
                 if d.zones.is_empty() {
                     d.zones = s.zones.clone();
                 }
+                // Assignments are edited in a modal, so the poll cannot clobber
+                // an in-progress edit; keep the list fresh.
+                d.mouse_buttons = s.mouse_buttons.clone();
                 d.min_dpi = s.min_dpi;
                 d.max_dpi = s.max_dpi;
                 d.stat = (s.stat_value, s.stat_label);
@@ -923,6 +982,7 @@ impl PreviewApp {
                     min_dpi: s.min_dpi,
                     max_dpi: s.max_dpi,
                     zones: s.zones,
+                    mouse_buttons: s.mouse_buttons,
                     stat: (s.stat_value, s.stat_label),
                 });
             }
@@ -1507,7 +1567,9 @@ impl PreviewApp {
                         }
                         ui.add_space(16.0);
                     }
-                    assignments_card(ui, d);
+                    if let Some(next) = assignments_card(ui, d) {
+                        action = Some(next);
+                    }
                 }
             });
         });
@@ -2332,12 +2394,10 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
         }
         ui.add_space(6.0);
         ui.label(
-            RichText::new(
-                "Per-key colour applies to OpenLinkHub; key assignment editing is not wired yet.",
-            )
-            .size(10.0)
-            .italics()
-            .color(t::DIM),
+            RichText::new("Per-key colour and key assignments apply to OpenLinkHub.")
+                .size(10.0)
+                .italics()
+                .color(t::DIM),
         );
     });
     action
@@ -2486,8 +2546,7 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                 let name_w = 62.0;
                 let value_w = 58.0;
                 let swatch_w = 28.0;
-                let track_w =
-                    (ui.available_width() - name_w - value_w - swatch_w - 24.0).max(80.0);
+                let track_w = (ui.available_width() - name_w - value_w - swatch_w - 24.0).max(80.0);
 
                 ui.allocate_ui_with_layout(
                     Vec2::new(name_w, 28.0),
@@ -2503,8 +2562,7 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                     Layout::left_to_right(Align::Center),
                     |ui| {
                         if t::slider_plain(ui, &mut value, min as f32, max as f32) {
-                            stage.value =
-                                value.round().clamp(min as f32, max as f32) as u16;
+                            stage.value = value.round().clamp(min as f32, max as f32) as u16;
                         }
                     },
                 );
@@ -2600,34 +2658,105 @@ fn zones_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
     }
 }
 
-fn assignments_card(ui: &mut Ui, d: &Device) {
+fn assignments_card(ui: &mut Ui, d: &Device) -> Option<DeviceAction> {
+    let mut edit: Option<i32> = None;
     t::card_padded(16).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 t::section_label(ui, "Key assignments");
                 ui.label(
-                    RichText::new("Remap keys and buttons")
-                        .size(15.0)
-                        .strong()
-                        .color(t::WHITE),
+                    RichText::new(if d.kind == Kind::Mouse {
+                        "Remap buttons"
+                    } else {
+                        "Remap keys and buttons"
+                    })
+                    .size(15.0)
+                    .strong()
+                    .color(t::WHITE),
                 );
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let _ = t::button(ui, "Edit layout", t::Btn::Normal);
             });
         });
         ui.add_space(10.0);
-        let rows: [(&str, &str); 4] = [
-            ("Escape", "Escape"),
-            ("Caps Lock", "Caps Lock"),
-            ("Left Alt", "Left Alt"),
-            ("Side button 4", "DPI Toggle"),
-        ];
-        for (key, action) in rows {
-            t::stat_row(ui, key, action);
+
+        if d.kind == Kind::Mouse && !d.mouse_buttons.is_empty() {
+            for button in &d.mouse_buttons {
+                // The web UI leaves the left button and profile switch alone.
+                if matches!(button.index, 1 | 16) {
+                    continue;
+                }
+                let (rect, resp) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(
+                        rect.expand2(Vec2::new(6.0, 0.0)),
+                        CornerRadius::same(6),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 8),
+                    );
+                }
+                t::hairline(
+                    ui.painter(),
+                    rect.top(),
+                    rect.left(),
+                    rect.right(),
+                    t::BORDER,
+                );
+                ui.painter().text(
+                    egui::pos2(rect.left() + 4.0, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &button.name,
+                    FontId::proportional(11.5),
+                    t::TEXT,
+                );
+                ui.painter().text(
+                    egui::pos2(rect.right() - 4.0, rect.center().y),
+                    Align2::RIGHT_CENTER,
+                    button_action_label(d, button),
+                    FontId::proportional(11.0),
+                    t::MUTED,
+                );
+                if resp.clicked() {
+                    edit = Some(button.index);
+                }
+            }
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Click a button to edit its assignment.")
+                    .size(10.5)
+                    .italics()
+                    .color(t::DIM),
+            );
+        } else {
+            let rows: [(&str, &str); 4] = [
+                ("Escape", "Escape"),
+                ("Caps Lock", "Caps Lock"),
+                ("Left Alt", "Left Alt"),
+                ("Side button 4", "DPI Toggle"),
+            ];
+            for (key, action) in rows {
+                t::stat_row(ui, key, action);
+            }
         }
+
         if let Some(battery) = d.battery {
             t::stat_row(ui, "Battery", &format!("{battery}%"));
         }
     });
+    edit.map(DeviceAction::EditAssignment)
+}
+
+fn button_action_label(d: &Device, button: &api::MouseButton) -> String {
+    if button.default {
+        return "Default".into();
+    }
+    let type_name = d
+        .assignment_types
+        .iter()
+        .find(|(code, _)| *code == button.action_type as i32)
+        .map(|(_, name)| name.clone())
+        .unwrap_or_else(|| format!("Type {}", button.action_type));
+    if button.action_command == 0 {
+        type_name
+    } else {
+        format!("{type_name} · {}", button.action_command)
+    }
 }

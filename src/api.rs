@@ -240,6 +240,22 @@ pub struct ZoneColor {
     pub color: [u8; 3],
 }
 
+/// One remappable mouse button.
+#[derive(Debug, Clone, Default)]
+pub struct MouseButton {
+    pub index: i32,
+    pub name: String,
+    pub default: bool,
+    pub action_hold: bool,
+    #[allow(dead_code)]
+    pub on_release: bool,
+    pub action_type: u8,
+    pub action_command: u16,
+    pub modifier_key: i32,
+    pub retain_original: bool,
+    pub toggle_delay: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
     pub product: String,
@@ -270,6 +286,7 @@ pub struct DeviceStatus {
     pub min_dpi: u16,
     pub max_dpi: u16,
     pub zones: Vec<ZoneColor>,
+    pub mouse_buttons: Vec<MouseButton>,
 }
 
 /// One snapshot of the dashboard: device cards and monitored values.
@@ -298,6 +315,8 @@ struct DeviceDetail {
     layouts: Vec<String>,
     #[serde(default, rename = "KeyAssignmentTypes")]
     assignment_types: HashMap<String, String>,
+    #[serde(default, rename = "KeyAssignment")]
+    key_assignment: Option<serde_json::Value>,
     #[serde(default, rename = "MinDPI")]
     min_dpi: Option<u16>,
     #[serde(default, rename = "MaxDPI")]
@@ -468,6 +487,51 @@ impl DeviceDetail {
         let min = self.min_dpi.unwrap_or(100);
         let max = self.max_dpi.unwrap_or(18000).max(min);
         (min, max)
+    }
+
+    fn mouse_buttons(&self) -> Vec<MouseButton> {
+        let Some(entries) = self.key_assignment.as_ref().and_then(|v| v.as_object()) else {
+            return Vec::new();
+        };
+        let flag = |entry: &serde_json::Value, key: &str| {
+            entry.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+        };
+        let mut buttons: Vec<(i64, MouseButton)> = entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let index = key.parse::<i64>().ok()?;
+                let name = entry.get("name").and_then(|v| v.as_str())?;
+                Some((
+                    index,
+                    MouseButton {
+                        index: index as i32,
+                        name: name.to_string(),
+                        default: flag(entry, "default"),
+                        action_hold: flag(entry, "actionHold"),
+                        on_release: flag(entry, "onRelease"),
+                        action_type: entry
+                            .get("actionType")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u8,
+                        action_command: entry
+                            .get("actionCommand")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u16,
+                        modifier_key: entry
+                            .get("modifierKey")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as i32,
+                        retain_original: flag(entry, "retainOriginal"),
+                        toggle_delay: entry
+                            .get("toggleDelay")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u16,
+                    },
+                ))
+            })
+            .collect();
+        buttons.sort_by_key(|(index, _)| *index);
+        buttons.into_iter().map(|(_, button)| button).collect()
     }
 
     fn profile_name(&self) -> String {
@@ -901,6 +965,14 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .as_ref()
             .map(DeviceDetail::zone_colors)
             .unwrap_or_default();
+        let mouse_buttons = if kind == DeviceKind::Mouse {
+            detail
+                .as_ref()
+                .map(DeviceDetail::mouse_buttons)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         statuses.push(DeviceStatus {
             product: dev.product.clone(),
@@ -934,6 +1006,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             min_dpi,
             max_dpi,
             zones,
+            mouse_buttons,
         });
     }
 
@@ -1234,6 +1307,63 @@ pub fn update_key_assignment(
     retain_original: bool,
     toggle_delay: u16,
 ) -> Result<(), String> {
+    update_assignment(
+        "keyboard",
+        serial,
+        key_index,
+        enabled,
+        press_and_hold,
+        type_code,
+        value,
+        value_string,
+        modifier,
+        retain_original,
+        toggle_delay,
+    )
+}
+
+/// Update a mouse button assignment.
+pub fn update_mouse_assignment(
+    serial: &str,
+    key_index: i32,
+    enabled: bool,
+    press_and_hold: bool,
+    type_code: i32,
+    value: Option<i64>,
+    value_string: Option<&str>,
+    modifier: i32,
+    retain_original: bool,
+    toggle_delay: u16,
+) -> Result<(), String> {
+    update_assignment(
+        "mouse",
+        serial,
+        key_index,
+        enabled,
+        press_and_hold,
+        type_code,
+        value,
+        value_string,
+        modifier,
+        retain_original,
+        toggle_delay,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_assignment(
+    kind: &str,
+    serial: &str,
+    key_index: i32,
+    enabled: bool,
+    press_and_hold: bool,
+    type_code: i32,
+    value: Option<i64>,
+    value_string: Option<&str>,
+    modifier: i32,
+    retain_original: bool,
+    toggle_delay: u16,
+) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "deviceId": serial,
         "keyIndex": key_index,
@@ -1251,7 +1381,7 @@ pub fn update_key_assignment(
     }
     send_json(
         "POST",
-        &format!("{BASE}/api/keyboard/updateKeyAssignment"),
+        &format!("{BASE}/api/{kind}/updateKeyAssignment"),
         &payload,
     )
 }
@@ -1720,6 +1850,10 @@ mod tests {
                         "0": {"Name": "Logo", "Color": {"Hex": "#ff8000"}},
                         "1": {"Name": "Scroll wheel", "Color": {"red": 0, "green": 255, "blue": 0}}
                     }
+                },
+                "KeyAssignment": {
+                    "2": {"name": "Right Button", "default": true, "actionType": 0, "actionCommand": 0},
+                    "32": {"name": "Side Button 1", "default": false, "actionType": 3, "actionCommand": 8, "actionHold": true}
                 }
             }"##,
         )
@@ -1737,6 +1871,13 @@ mod tests {
         assert_eq!(zones[0].name, "Logo");
         assert_eq!(zones[0].color, [255, 128, 0]);
         assert_eq!(zones[1].color, [0, 255, 0]);
+        let buttons = detail.mouse_buttons();
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0].name, "Right Button");
+        assert_eq!(buttons[1].index, 32);
+        assert_eq!(buttons[1].action_type, 3);
+        assert_eq!(buttons[1].action_command, 8);
+        assert!(buttons[1].action_hold);
     }
 
     #[test]
