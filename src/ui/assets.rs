@@ -1,18 +1,17 @@
-//! Local-only artwork loader for the ported UI.
+//! Device artwork bundled with the app.
 //!
-//! The web UI ships product art in Qt `.rcc` files that belong to Corsair.
-//! We never commit those; instead the app reads normalised PNGs from a local
-//! asset root and falls back to the drawn icons when they are absent.
-//!
-//! Root resolution:
-//!   `RGB_CUE_ASSETS` env var, else `~/assets/icue/normalized`.
+//! The Scimitar line drawings in `assets/scimitar_wireless/` were made by the
+//! project owner, so they are compiled into the binary. Other iCUE artwork is
+//! proprietary and stays outside the repo; those devices keep the drawn icons.
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+
+const MOUSE_TOP_PNG: &[u8] = include_bytes!("../../assets/scimitar_wireless/top.png");
+const MOUSE_SIDE_PNG: &[u8] = include_bytes!("../../assets/scimitar_wireless/side.png");
 
 pub struct ArtCache {
-    textures: HashMap<String, Option<TextureHandle>>,
+    textures: HashMap<&'static str, Option<TextureHandle>>,
 }
 
 impl ArtCache {
@@ -24,49 +23,46 @@ impl ArtCache {
 
     /// Top-down line art for a Scimitar-class mouse, if present.
     pub fn mouse_top(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
-        self.mouse(ctx, product, "top.png")
+        if !is_wireless_scimitar(product) {
+            return None;
+        }
+        self.load(ctx, "scimitar-top", MOUSE_TOP_PNG)
     }
 
     /// Side line art for a Scimitar-class mouse, if present.
     pub fn mouse_side(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
-        self.mouse(ctx, product, "side.png")
-    }
-
-    fn mouse(
-        &mut self,
-        ctx: &egui::Context,
-        product: &str,
-        file: &str,
-    ) -> Option<TextureHandle> {
-        let name = product.to_uppercase();
-        if !(name.contains("SCIMITAR") && name.contains("WIRELESS")) {
+        if !is_wireless_scimitar(product) {
             return None;
         }
-        self.load(ctx, &asset_root().join("scimitar_wireless").join(file))
+        self.load(ctx, "scimitar-side", MOUSE_SIDE_PNG)
     }
 
-    fn load(&mut self, ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
-        let key = path.to_string_lossy().to_string();
-        if let Some(cached) = self.textures.get(&key) {
+    fn load(
+        &mut self,
+        ctx: &egui::Context,
+        key: &'static str,
+        bytes: &'static [u8],
+    ) -> Option<TextureHandle> {
+        if let Some(cached) = self.textures.get(key) {
             return cached.clone();
         }
-        let texture = load_texture(ctx, &key, path);
+        let texture = load_texture(ctx, key, bytes);
         self.textures.insert(key, texture.clone());
         texture
     }
 }
 
-pub fn asset_root() -> PathBuf {
-    if let Ok(root) = std::env::var("RGB_CUE_ASSETS") {
-        return PathBuf::from(root);
-    }
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join("assets/icue/normalized")
+fn is_wireless_scimitar(product: &str) -> bool {
+    let name = product.to_uppercase();
+    name.contains("SCIMITAR") && name.contains("WIRELESS")
 }
 
-fn load_texture(ctx: &egui::Context, key: &str, path: &Path) -> Option<TextureHandle> {
-    let image = image::open(path).ok()?.to_rgba8();
+fn load_texture(
+    ctx: &egui::Context,
+    key: &str,
+    bytes: &[u8],
+) -> Option<TextureHandle> {
+    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = ColorImage::from_rgba_unmultiplied(size, image.as_raw());
     Some(ctx.load_texture(key.to_string(), pixels, TextureOptions::LINEAR))
