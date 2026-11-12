@@ -1924,7 +1924,7 @@ fn device_card(
         match d.kind {
             Kind::Keyboard => icons::keyboard(ui.painter(), rect, color, brightness, rainbow),
             Kind::Mouse => {
-                if let Some(texture) = art.mouse_top(ui.ctx(), &d.name) {
+                if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
                     draw_line_art(ui.painter(), rect.shrink2(Vec2::new(0.0, 4.0)), &texture, color);
                 } else {
                     icons::mouse(ui.painter(), rect, color, brightness, rainbow);
@@ -2347,7 +2347,15 @@ fn lighting_card(
         match d.kind {
             Kind::Keyboard => icons::keyboard(ui.painter(), rect, c, brightness, rainbow),
             Kind::Mouse => {
-                if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
+                if let Some((body, buttons)) = art.mouse_side_layers(ui.ctx(), &d.name) {
+                    draw_line_art(ui.painter(), rect, &body, c);
+                    draw_line_art(
+                        ui.painter(),
+                        rect,
+                        &buttons,
+                        t::mix(c, t::WHITE, 0.55),
+                    );
+                } else if let Some(texture) = art.mouse_side(ui.ctx(), &d.name) {
                     draw_line_art(ui.painter(), rect, &texture, c);
                 } else {
                     icons::mouse(ui.painter(), rect, c, brightness, rainbow);

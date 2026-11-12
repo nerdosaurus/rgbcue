@@ -9,6 +9,10 @@ use std::collections::HashMap;
 
 const MOUSE_TOP_PNG: &[u8] = include_bytes!("../../assets/scimitar_wireless/top.png");
 const MOUSE_SIDE_PNG: &[u8] = include_bytes!("../../assets/scimitar_wireless/side.png");
+const MOUSE_SIDE_BODY_PNG: &[u8] =
+    include_bytes!("../../assets/scimitar_wireless/layers/side_body.png");
+const MOUSE_SIDE_BUTTONS_PNG: &[u8] =
+    include_bytes!("../../assets/scimitar_wireless/layers/side_buttons.png");
 
 pub struct ArtCache {
     textures: HashMap<&'static str, Option<TextureHandle>>,
@@ -22,6 +26,7 @@ impl ArtCache {
     }
 
     /// Top-down line art for a Scimitar-class mouse, if present.
+    #[allow(dead_code)]
     pub fn mouse_top(&mut self, ctx: &egui::Context, product: &str) -> Option<TextureHandle> {
         if !is_wireless_scimitar(product) {
             return None;
@@ -35,6 +40,20 @@ impl ArtCache {
             return None;
         }
         self.load(ctx, "scimitar-side", MOUSE_SIDE_PNG)
+    }
+
+    /// Side view split into body and side-button layers, for per-zone tinting.
+    pub fn mouse_side_layers(
+        &mut self,
+        ctx: &egui::Context,
+        product: &str,
+    ) -> Option<(TextureHandle, TextureHandle)> {
+        if !is_wireless_scimitar(product) {
+            return None;
+        }
+        let body = self.load(ctx, "scimitar-side-body", MOUSE_SIDE_BODY_PNG)?;
+        let buttons = self.load(ctx, "scimitar-side-buttons", MOUSE_SIDE_BUTTONS_PNG)?;
+        Some((body, buttons))
     }
 
     fn load(
