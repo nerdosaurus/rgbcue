@@ -511,7 +511,7 @@ pub fn commander(painter: &egui::Painter, rect: Rect, color: Color32) {
 }
 
 pub fn battery(painter: &egui::Painter, rect: Rect, pct: u8) {
-    let margin = rect.height() * 0.18;
+    let margin = rect.height() * 0.16;
     let body = Rect::from_min_max(
         egui::pos2(rect.left(), rect.top() + margin),
         egui::pos2(rect.right() - 4.0, rect.bottom() - margin),
@@ -524,7 +524,7 @@ pub fn battery(painter: &egui::Painter, rect: Rect, pct: u8) {
     );
     let terminal = Rect::from_center_size(
         egui::pos2(body.right() + 2.0, body.center().y),
-        Vec2::new(3.0, rect.height() * 0.32),
+        Vec2::new(3.0, rect.height() * 0.36),
     );
     painter.rect_filled(terminal, 1, MUTED);
 
