@@ -706,7 +706,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             }
             DeviceKind::Commander => {
                 if total > 0 {
-                    (thousands(total), "Fan RPM".into())
+                    (total.to_string(), "Fan RPM".into())
                 } else {
                     ("Connected".into(), "Status".into())
                 }
@@ -717,7 +717,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             },
             DeviceKind::Mouse => {
                 if let Some(dpi) = dpi {
-                    (thousands(dpi as u64), "DPI".into())
+                    ((dpi as u64).to_string(), "DPI".into())
                 } else if let Some(b) = battery {
                     (format!("{}%", b.level), "Battery".into())
                 } else {
@@ -876,19 +876,6 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
         dashboard,
         monitors,
     })
-}
-
-/// Group digits with spaces, matching the web UI's `1 240` style.
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(' ');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 fn cpu_model() -> Option<String> {
@@ -1518,14 +1505,6 @@ pub fn fetch_mouse_buttons() -> Result<Vec<(u16, InputKey)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn groups_digits() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1235), "1 235");
-        assert_eq!(thousands(18000), "18 000");
-    }
 
     #[test]
     fn parses_keyboard_profile() {
