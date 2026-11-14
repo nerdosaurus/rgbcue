@@ -2050,6 +2050,7 @@ impl PreviewApp {
         let mut action: Option<DeviceAction> = None;
         let mut brightness: Option<f32> = None;
         let mut scroll_assignments = false;
+        let mut profile_error = false;
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -2214,18 +2215,41 @@ impl PreviewApp {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut d.new_profile_name)
-                                        .hint_text("Profile name")
+                                        .hint_text("Letters/numbers")
                                         .desired_width(132.0)
                                         .text_color(t::TEXT),
                                 );
                                 let name = d.new_profile_name.trim();
                                 let valid = name.len() >= 3
                                     && name.chars().all(|c| c.is_ascii_alphanumeric());
-                                if t::button(ui, "Save", t::Btn::Success) && valid {
-                                    action = Some(DeviceAction::SaveUserProfile(name.to_string()));
-                                    d.new_profile_name.clear();
+                                if t::button(
+                                    ui,
+                                    "Save",
+                                    if valid { t::Btn::Success } else { t::Btn::Normal },
+                                ) {
+                                    if valid {
+                                        action = Some(DeviceAction::SaveUserProfile(
+                                            name.to_string(),
+                                        ));
+                                        d.new_profile_name.clear();
+                                    } else {
+                                        profile_error = true;
+                                    }
                                 }
                             });
+                            if !d.new_profile_name.trim().is_empty()
+                                && !(d.new_profile_name.trim().len() >= 3
+                                    && d.new_profile_name
+                                        .trim()
+                                        .chars()
+                                        .all(|c| c.is_ascii_alphanumeric()))
+                            {
+                                ui.label(
+                                    RichText::new("Use 3+ letters or numbers, no spaces.")
+                                        .size(10.0)
+                                        .color(t::WARN),
+                                );
+                            }
                             let deletable: Vec<String> = d
                                 .profiles
                                 .iter()
@@ -2310,6 +2334,9 @@ impl PreviewApp {
             });
         });
 
+        if profile_error {
+            self.notice = Some(("Profile name needs 3+ letters or numbers".into(), false));
+        }
         self.assignment_panel(ui);
         self.keyboard_modals(ui);
 
