@@ -4058,16 +4058,18 @@ fn assignments_card(ui: &mut Ui, d: &Device, scroll: bool) -> Option<DeviceActio
                     .italics()
                     .color(t::DIM),
             );
+        } else if d.kind == Kind::Mouse {
+            ui.label(
+                RichText::new("No button assignments reported by OpenLinkHub.")
+                    .size(11.5)
+                    .color(t::MUTED),
+            );
         } else {
-            let rows: [(&str, &str); 4] = [
-                ("Escape", "Escape"),
-                ("Caps Lock", "Caps Lock"),
-                ("Left Alt", "Left Alt"),
-                ("Side button 4", "DPI Toggle"),
-            ];
-            for (key, action) in rows {
-                t::stat_row(ui, key, action);
-            }
+            ui.label(
+                RichText::new("This device has no key assignments.")
+                    .size(11.5)
+                    .color(t::MUTED),
+            );
         }
 
         if let Some(battery) = d.battery {
