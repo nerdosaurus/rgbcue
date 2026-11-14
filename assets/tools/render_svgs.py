@@ -114,6 +114,8 @@ def main():
         side_png = os.path.join(device_dir, "side.png")
         render(top_svg, top_png, width)
         render(top_svg, os.path.join(device_dir, "top_2x.png"), width * 2)
+        convert([top_png, "-channel", "A", "-morphology", "Dilate", "Disk:1",
+                 "+channel", os.path.join(device_dir, "top_card.png")])
         render(side_svg, side_png, side_width)
         render(side_svg, os.path.join(device_dir, "side_2x.png"), side_width * 2)
 

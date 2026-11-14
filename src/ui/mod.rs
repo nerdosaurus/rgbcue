@@ -44,6 +44,8 @@ const LANGUAGE_CODES: &[(&str, &str)] = &[
     ("se_SE", "Svenska"),
 ];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
+/// Dashboard mouse cards use the top-down view; flip to `false` for side-on.
+const MOUSE_CARD_TOP: bool = false;
 const SWATCHES: &[[u8; 3]] = &[
     [255, 255, 255],
     [255, 82, 82],
@@ -3373,7 +3375,12 @@ fn device_card(
                 }
             }
             Kind::Mouse => {
-                if let Some(texture) = art.mouse_side_card(ui.ctx(), &d.name) {
+                let texture = if MOUSE_CARD_TOP {
+                    art.mouse_top_card(ui.ctx(), &d.name)
+                } else {
+                    art.mouse_side_card(ui.ctx(), &d.name)
+                };
+                if let Some(texture) = texture {
                     draw_line_art(
                         ui.painter(),
                         rect.shrink2(Vec2::new(0.0, 4.0)),
