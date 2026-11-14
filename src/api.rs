@@ -15,6 +15,16 @@ use std::time::Duration;
 pub const BASE: &str = "http://127.0.0.1:27003";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
+/// OpenLinkHub marshals nil Go maps/slices as `null`; `#[serde(default)]`
+/// only covers a missing field, not an explicit null, so treat null as empty.
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// One Corsair device as reported by `GET /api/devices/`.
 ///
 /// The list endpoint is intentionally sparse: `GetDevicesEx` in OpenLinkHub
@@ -363,17 +373,22 @@ struct DeviceDetail {
     firmware: String,
     #[serde(default, rename = "DeviceProfile")]
     profile: Option<DeviceProfile>,
-    #[serde(default, rename = "PollingRates")]
+    #[serde(default, deserialize_with = "null_default", rename = "PollingRates")]
     polling_rates: HashMap<String, String>,
     #[serde(default)]
     devices: Option<serde_json::Value>,
-    #[serde(default, rename = "UserProfiles")]
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        rename = "UserProfiles",
+        alias = "userProfiles"
+    )]
     user_profiles: HashMap<String, UserProfile>,
-    #[serde(default, rename = "RGBModes")]
+    #[serde(default, deserialize_with = "null_default", rename = "RGBModes")]
     rgb_modes: Vec<String>,
-    #[serde(default, rename = "Layouts")]
+    #[serde(default, deserialize_with = "null_default", rename = "Layouts")]
     layouts: Vec<String>,
-    #[serde(default, rename = "KeyAssignmentTypes")]
+    #[serde(default, deserialize_with = "null_default", rename = "KeyAssignmentTypes")]
     assignment_types: HashMap<String, String>,
     #[serde(default, rename = "KeyAssignment")]
     key_assignment: Option<serde_json::Value>,
@@ -381,9 +396,9 @@ struct DeviceDetail {
     min_dpi: Option<u16>,
     #[serde(default, rename = "MaxDPI")]
     max_dpi: Option<u16>,
-    #[serde(default, rename = "SleepModes")]
+    #[serde(default, deserialize_with = "null_default", rename = "SleepModes")]
     sleep_modes: HashMap<String, String>,
-    #[serde(default, rename = "LiftHeights")]
+    #[serde(default, deserialize_with = "null_default", rename = "LiftHeights")]
     lift_heights: HashMap<String, String>,
     #[serde(default, rename = "Usb")]
     usb: Option<bool>,
@@ -2406,6 +2421,60 @@ mod tests {
         assert_eq!(buttons[1].action_type, 3);
         assert_eq!(buttons[1].action_command, 8);
         assert!(buttons[1].action_hold);
+    }
+
+    #[test]
+    fn parses_null_collections() {
+        // OpenLinkHub marshals nil maps/slices as null (e.g. Layouts on a
+        // mouse). A plain #[serde(default)] would fail the whole detail.
+        let detail: DeviceDetail = serde_json::from_str(
+            r#"{
+                "firmware": "",
+                "DeviceProfile": {
+                    "Brightness": 80,
+                    "RGBProfile": "Static",
+                    "Profile": 0,
+                    "PollingRate": 0,
+                    "Profiles": null,
+                    "ZoneColors": null
+                },
+                "PollingRates": null,
+                "UserProfiles": null,
+                "RGBModes": null,
+                "Layouts": null,
+                "KeyAssignmentTypes": null,
+                "KeyAssignment": {
+                    "32": {"name": "Side Button 1", "actionType": 3, "actionCommand": 4}
+                },
+                "MinDPI": 100,
+                "MaxDPI": 18000,
+                "SleepModes": null,
+                "LiftHeights": null,
+                "Usb": true,
+                "Connected": true
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(detail.brightness(), 80);
+        assert_eq!(detail.dpi_range(), (100, 18000));
+        assert!(detail.dpi_stages().is_empty());
+        assert!(detail.rgb_modes.is_empty());
+        assert!(detail.layouts.is_empty());
+        assert!(detail.lift_heights().is_empty());
+        let buttons = detail.mouse_buttons();
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].name, "Side Button 1");
+        assert_eq!(buttons[0].index, 32);
+    }
+
+    #[test]
+    fn parses_lowercase_user_profiles() {
+        // The Go field is tagged `json:"userProfiles"`; the web template uses
+        // the Go field name, but JSON clients only see the lowercase key.
+        let detail: DeviceDetail =
+            serde_json::from_str(r#"{"userProfiles":{"Default":{"Active":true}}}"#).unwrap();
+        assert_eq!(detail.profiles(), vec!["Default"]);
+        assert_eq!(detail.active_profile().as_deref(), Some("Default"));
     }
 
     #[test]
