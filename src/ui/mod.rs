@@ -149,6 +149,7 @@ struct Device {
     new_profile_name: String,
     assignment_types: Vec<(i32, String)>,
     dpi_stages: Vec<api::DpiStage>,
+    active_dpi_stage: Option<i64>,
     min_dpi: u16,
     max_dpi: u16,
     zones: Vec<api::ZoneColor>,
@@ -524,6 +525,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
                     dpi_stages: Vec::new(),
+                    active_dpi_stage: None,
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
@@ -567,6 +569,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
                     dpi_stages: Vec::new(),
+                    active_dpi_stage: None,
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
@@ -610,6 +613,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
                     dpi_stages: Vec::new(),
+                    active_dpi_stage: None,
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
@@ -653,6 +657,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
                     dpi_stages: Vec::new(),
+                    active_dpi_stage: None,
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
@@ -696,6 +701,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: default_assignment_types(),
                     dpi_stages: Vec::new(),
+                    active_dpi_stage: None,
                     min_dpi: 100,
                     max_dpi: 18000,
                     zones: Vec::new(),
@@ -1430,6 +1436,7 @@ impl PreviewApp {
                 if d.dpi_stages.is_empty() {
                     d.dpi_stages = s.dpi_stages.clone();
                 }
+                d.active_dpi_stage = s.active_dpi_stage;
                 if d.zones.is_empty() {
                     d.zones = s.zones.clone();
                 }
@@ -1537,6 +1544,7 @@ impl PreviewApp {
                     new_profile_name: String::new(),
                     assignment_types: s.assignment_types,
                     dpi_stages: s.dpi_stages,
+                    active_dpi_stage: s.active_dpi_stage,
                     min_dpi: s.min_dpi,
                     max_dpi: s.max_dpi,
                     zones: s.zones,
@@ -3920,18 +3928,37 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
         let max = d.max_dpi.max(min);
 
         for stage in d.dpi_stages.iter_mut() {
+            let active = d.active_dpi_stage == Some(stage.index);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let name_w = 62.0;
-                let value_w = 58.0;
+                let dot_w = 10.0;
+                let name_w = 74.0;
+                let value_w = 64.0;
                 let swatch_w = 28.0;
-                let track_w = (ui.available_width() - name_w - value_w - swatch_w - 24.0).max(80.0);
+                let track_w = (ui.available_width()
+                    - dot_w
+                    - name_w
+                    - value_w
+                    - swatch_w
+                    - 32.0)
+                    .max(80.0);
+
+                let (dot, dot_resp) =
+                    ui.allocate_exact_size(Vec2::new(dot_w, 28.0), Sense::hover());
+                if active {
+                    ui.painter().circle_filled(dot.center(), 3.5, t::GOLD);
+                    dot_resp.on_hover_text("Active DPI stage");
+                }
 
                 ui.allocate_ui_with_layout(
                     Vec2::new(name_w, 28.0),
                     Layout::left_to_right(Align::Center),
                     |ui| {
-                        ui.label(RichText::new(&stage.name).size(11.0).color(t::MUTED));
+                        ui.label(RichText::new(&stage.name).size(11.0).color(if active {
+                            t::GOLD
+                        } else {
+                            t::MUTED
+                        }));
                     },
                 );
 
@@ -3946,17 +3973,29 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                     },
                 );
 
-                let mut typed = stage.value as i32;
-                let resp = ui.add(
-                    egui::DragValue::new(&mut typed)
-                        .range(min as i32..=max as i32)
-                        .speed(10.0),
+                ui.allocate_ui_with_layout(
+                    Vec2::new(value_w, 28.0),
+                    Layout::right_to_left(Align::Center),
+                    |ui| {
+                        let mut typed = stage.value as i32;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut typed)
+                                .range(min as i32..=max as i32)
+                                .speed(10.0),
+                        );
+                        if resp.changed() {
+                            stage.value = typed.clamp(min as i32, max as i32) as u16;
+                        }
+                    },
                 );
-                if resp.changed() {
-                    stage.value = typed.clamp(min as i32, max as i32) as u16;
-                }
 
-                egui::color_picker::color_edit_button_srgb(ui, &mut stage.color);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(swatch_w, 28.0),
+                    Layout::right_to_left(Align::Center),
+                    |ui| {
+                        egui::color_picker::color_edit_button_srgb(ui, &mut stage.color);
+                    },
+                );
             });
             ui.add_space(2.0);
         }
@@ -3972,7 +4011,7 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
         });
         ui.add_space(6.0);
         ui.label(
-            RichText::new("DPI values and stage colours apply to OpenLinkHub.")
+            RichText::new("Gold dot = active stage. Editing it and saving changes the current DPI; the mouse's DPI button switches stages.")
                 .size(10.5)
                 .italics()
                 .color(t::DIM),

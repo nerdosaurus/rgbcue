@@ -248,6 +248,7 @@ pub struct KeyboardLayout {
 /// One DPI sensitivity stage, with the colour assigned to it.
 #[derive(Debug, Clone, Default)]
 pub struct DpiStage {
+    pub index: i64,
     pub name: String,
     pub value: u16,
     pub color: [u8; 3],
@@ -333,6 +334,7 @@ pub struct DeviceStatus {
     pub max_dpi: u16,
     pub zones: Vec<ZoneColor>,
     pub mouse_buttons: Vec<MouseButton>,
+    pub active_dpi_stage: Option<i64>,
     pub sleep_modes: Vec<(i64, String)>,
     pub active_sleep: i64,
     pub angle_snapping: bool,
@@ -538,7 +540,12 @@ impl DeviceDetail {
                     .get("Color")
                     .and_then(json_color)
                     .unwrap_or([255, 255, 255]);
-                Some((idx, DpiStage { name, value, color }))
+                Some((idx, DpiStage {
+                    index: idx,
+                    name,
+                    value,
+                    color,
+                }))
             })
             .collect();
         stages.sort_by_key(|(idx, _)| *idx);
@@ -572,6 +579,13 @@ impl DeviceDetail {
             .collect();
         zones.sort_by_key(|(idx, _)| *idx);
         zones.into_iter().map(|(_, zone)| zone).collect()
+    }
+
+    fn active_dpi_stage(&self) -> Option<i64> {
+        self.profile
+            .as_ref()
+            .and_then(|p| p.profile.as_ref())
+            .and_then(|v| v.as_i64())
     }
 
     fn dpi_range(&self) -> (u16, u16) {
@@ -1110,6 +1124,9 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             .as_ref()
             .map(DeviceDetail::zone_colors)
             .unwrap_or_default();
+        let active_dpi_stage = detail
+            .as_ref()
+            .and_then(DeviceDetail::active_dpi_stage);
         let mouse_buttons = if kind == DeviceKind::Mouse {
             detail
                 .as_ref()
@@ -1172,6 +1189,7 @@ pub fn fetch_dashboard() -> Result<Dashboard, String> {
             max_dpi,
             zones,
             mouse_buttons,
+            active_dpi_stage,
             sleep_modes,
             active_sleep,
             angle_snapping,
