@@ -3950,16 +3950,16 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                     dot_resp.on_hover_text("Active DPI stage");
                 }
 
-                ui.allocate_ui_with_layout(
-                    Vec2::new(name_w, 28.0),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        ui.label(RichText::new(&stage.name).size(11.0).color(if active {
-                            t::GOLD
-                        } else {
-                            t::MUTED
-                        }));
-                    },
+                // Paint into a fixed rect: a shorter name (e.g. "Sniper")
+                // must not pull the value/colour columns to the left.
+                let (name_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(name_w, 28.0), Sense::hover());
+                ui.painter().text(
+                    egui::pos2(name_rect.left() + 2.0, name_rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &stage.name,
+                    FontId::proportional(11.0),
+                    if active { t::GOLD } else { t::MUTED },
                 );
 
                 let mut value = stage.value as f32;
