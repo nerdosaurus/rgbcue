@@ -2021,6 +2021,7 @@ impl PreviewApp {
         let d = &mut self.devices[idx];
         let mut action: Option<DeviceAction> = None;
         let mut brightness: Option<f32> = None;
+        let mut scroll_assignments = false;
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -2103,6 +2104,16 @@ impl PreviewApp {
                                     }
                                 });
                             }
+                        }
+                        if d.kind == Kind::Mouse {
+                            t::settings_row(ui, "Button assignments", |ui| {
+                                if t::button(ui, "Configure", t::Btn::Normal) {
+                                    scroll_assignments = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
                         }
                         if d.kind == Kind::Mouse && d.wireless && !d.sleep_modes.is_empty() {
                             let names: Vec<String> =
@@ -2253,7 +2264,7 @@ impl PreviewApp {
                         }
                         ui.add_space(16.0);
                     }
-                    if let Some(next) = assignments_card(ui, d) {
+                    if let Some(next) = assignments_card(ui, d, scroll_assignments) {
                         action = Some(next);
                     }
                 }
@@ -3995,9 +4006,9 @@ fn zones_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
     }
 }
 
-fn assignments_card(ui: &mut Ui, d: &Device) -> Option<DeviceAction> {
+fn assignments_card(ui: &mut Ui, d: &Device, scroll: bool) -> Option<DeviceAction> {
     let mut edit: Option<i32> = None;
-    t::card_padded(16).show(ui, |ui| {
+    let card = t::card_padded(16).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 t::section_label(ui, "Key assignments");
@@ -4021,43 +4032,28 @@ fn assignments_card(ui: &mut Ui, d: &Device) -> Option<DeviceAction> {
                 if matches!(button.index, 1 | 16) {
                     continue;
                 }
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(
-                        rect.expand2(Vec2::new(6.0, 0.0)),
-                        CornerRadius::same(6),
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 8),
-                    );
-                }
-                t::hairline(
-                    ui.painter(),
-                    rect.top(),
-                    rect.left(),
-                    rect.right(),
-                    t::BORDER,
-                );
-                ui.painter().text(
-                    egui::pos2(rect.left() + 4.0, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    &button.name,
-                    FontId::proportional(11.5),
-                    t::TEXT,
-                );
-                ui.painter().text(
-                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    button_action_label(d, button),
-                    FontId::proportional(11.0),
-                    t::MUTED,
-                );
-                if resp.clicked() {
-                    edit = Some(button.index);
-                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&button.name).size(11.5).color(t::TEXT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if t::button(ui, "Edit", t::Btn::Normal) {
+                            edit = Some(button.index);
+                        }
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(button_action_label(d, button))
+                                .size(11.0)
+                                .color(t::MUTED),
+                        );
+                    });
+                });
+                let (line, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                ui.painter().rect_filled(line, 0, t::BORDER);
+                ui.add_space(2.0);
             }
             ui.add_space(6.0);
             ui.label(
-                RichText::new("Click a button to edit its assignment.")
+                RichText::new("Choose Edit to change a button's action.")
                     .size(10.5)
                     .italics()
                     .color(t::DIM),
@@ -4078,6 +4074,9 @@ fn assignments_card(ui: &mut Ui, d: &Device) -> Option<DeviceAction> {
             t::stat_row(ui, "Battery", &format!("{battery}%"));
         }
     });
+    if scroll {
+        card.response.scroll_to_me(Some(Align::TOP));
+    }
     edit.map(DeviceAction::EditAssignment)
 }
 
