@@ -45,7 +45,7 @@ const LANGUAGE_CODES: &[(&str, &str)] = &[
 ];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
 /// Dashboard mouse cards use the top-down view; flip to `false` for side-on.
-const MOUSE_CARD_TOP: bool = false;
+const MOUSE_CARD_TOP: bool = true;
 const SWATCHES: &[[u8; 3]] = &[
     [255, 255, 255],
     [255, 82, 82],
