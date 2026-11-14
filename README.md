@@ -13,7 +13,9 @@ first.
 The Scimitar (wireless and wired), Darkstar and K65 line drawings under
 `assets/` are original project artwork and are compiled into the binary: the
 side/top view for the dashboard card, body/button layers on the mouse device
-page, and the K65 card drawing on the keyboard card.
+page, and the K65 card drawing on the keyboard card. The cleaned SVG sources
+live in `assets/*/svg/`; `assets/tools/render_svgs.py` regenerates the bundled
+PNGs from them (needs `rsvg-convert` and ImageMagick).
 
 Artwork extracted from Corsair's iCUE `.rcc` files is proprietary and stays
 outside the repo. Devices without bundled art use the drawn icons.
