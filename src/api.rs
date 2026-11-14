@@ -2063,6 +2063,8 @@ pub const ACTION_DELAY: u8 = 5;
 pub const ACTION_TEXT: u8 = 6;
 pub const ACTION_MOUSE: u8 = 9;
 pub const ACTION_MOUSE_POSITION: u8 = 20;
+/// Key-assignment type code for a macro (not the macro step type).
+pub const ASSIGNMENT_MACRO: u8 = 10;
 
 /// A human-readable label for a macro action type.
 pub fn action_type_label(t: u8) -> &'static str {

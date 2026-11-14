@@ -362,6 +362,7 @@ struct PreviewApp {
     macro_media: Vec<(u16, String)>,
     macro_mouse: Vec<(u16, String)>,
     macro_keys_loaded: bool,
+    macro_names_loaded: bool,
     macro_repeat_loop: bool,
     macro_repeat_count: i32,
     macro_repeat_delay: i32,
@@ -420,6 +421,7 @@ impl PreviewApp {
             macro_media: Vec::new(),
             macro_mouse: Vec::new(),
             macro_keys_loaded: false,
+            macro_names_loaded: false,
             macro_repeat_loop: false,
             macro_repeat_count: 0,
             macro_repeat_delay: 0,
@@ -1899,6 +1901,7 @@ impl PreviewApp {
                 if t::button(ui, "Refresh", t::Btn::Ghost) {
                     let _ = self.refresh_tx.send(());
                     self.macro_dirty = true;
+                    self.macro_names_loaded = false;
                     self.settings_loaded = false;
                 }
             });
@@ -2015,6 +2018,23 @@ impl PreviewApp {
     // ---- device ------------------------------------------------------------
 
     fn device_page(&mut self, ui: &mut Ui, idx: usize) {
+        self.ensure_macro_keys();
+        let needs_macros = self.devices[idx]
+            .mouse_buttons
+            .iter()
+            .any(|b| !b.default && b.action_type == api::ASSIGNMENT_MACRO);
+        if needs_macros && self.macros.is_empty() && !self.macro_names_loaded {
+            self.macro_names_loaded = true;
+            self.macros = api::fetch_macros().unwrap_or_default();
+        }
+        let key_names = self.macro_keys.clone();
+        let media_names = self.macro_media.clone();
+        let mouse_names = self.macro_mouse.clone();
+        let macro_names: Vec<(i32, String)> = self
+            .macros
+            .iter()
+            .map(|m| (m.id, m.name.clone()))
+            .collect();
         let on_dashboard = self.device_order.contains(&idx);
         let color = &mut self.color;
         let art = &mut self.art;
@@ -2042,6 +2062,9 @@ impl PreviewApp {
                         ui.add_space(8.0);
 
                         t::stat_row(ui, "Firmware", &d.firmware);
+                        if let Some(battery) = d.battery {
+                            t::stat_row(ui, "Battery", &format!("{battery}%"));
+                        }
                         t::settings_row(ui, "Profile", |ui| {
                             let changed = t::select_strings(ui, &d.profiles, &mut d.profile);
                             if changed {
@@ -2264,7 +2287,15 @@ impl PreviewApp {
                         }
                         ui.add_space(16.0);
                     }
-                    if let Some(next) = assignments_card(ui, d, scroll_assignments) {
+                    if let Some(next) = assignments_card(
+                        ui,
+                        d,
+                        scroll_assignments,
+                        &key_names,
+                        &media_names,
+                        &mouse_names,
+                        &macro_names,
+                    ) {
                         action = Some(next);
                     }
                 }
@@ -4006,7 +4037,15 @@ fn zones_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
     }
 }
 
-fn assignments_card(ui: &mut Ui, d: &Device, scroll: bool) -> Option<DeviceAction> {
+fn assignments_card(
+    ui: &mut Ui,
+    d: &Device,
+    scroll: bool,
+    keys: &[(u16, String)],
+    media: &[(u16, String)],
+    mouse: &[(u16, String)],
+    macros: &[(i32, String)],
+) -> Option<DeviceAction> {
     let mut edit: Option<i32> = None;
     let card = t::card_padded(16).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -4040,7 +4079,9 @@ fn assignments_card(ui: &mut Ui, d: &Device, scroll: bool) -> Option<DeviceActio
                         }
                         ui.add_space(6.0);
                         ui.label(
-                            RichText::new(button_action_label(d, button))
+                            RichText::new(button_action_label(
+                                d, button, keys, media, mouse, macros,
+                            ))
                                 .size(11.0)
                                 .color(t::MUTED),
                         );
@@ -4072,9 +4113,6 @@ fn assignments_card(ui: &mut Ui, d: &Device, scroll: bool) -> Option<DeviceActio
             );
         }
 
-        if let Some(battery) = d.battery {
-            t::stat_row(ui, "Battery", &format!("{battery}%"));
-        }
     });
     if scroll {
         card.response.scroll_to_me(Some(Align::TOP));
@@ -4154,7 +4192,14 @@ fn macro_command_editor(
     }
 }
 
-fn button_action_label(d: &Device, button: &api::MouseButton) -> String {
+fn button_action_label(
+    d: &Device,
+    button: &api::MouseButton,
+    keys: &[(u16, String)],
+    media: &[(u16, String)],
+    mouse: &[(u16, String)],
+    macros: &[(i32, String)],
+) -> String {
     if button.default {
         return "Default".into();
     }
@@ -4164,9 +4209,34 @@ fn button_action_label(d: &Device, button: &api::MouseButton) -> String {
         .find(|(code, _)| *code == button.action_type as i32)
         .map(|(_, name)| name.clone())
         .unwrap_or_else(|| format!("Type {}", button.action_type));
-    if button.action_command == 0 {
-        type_name
-    } else {
-        format!("{type_name} · {}", button.action_command)
+
+    let display = match button.action_type {
+        api::ACTION_KEYBOARD => keys
+            .iter()
+            .find(|(code, _)| *code == button.action_command)
+            .map(|(_, name)| name.clone()),
+        api::ACTION_MEDIA => media
+            .iter()
+            .find(|(code, _)| *code == button.action_command)
+            .map(|(_, name)| name.clone()),
+        api::ACTION_MOUSE => mouse
+            .iter()
+            .find(|(code, _)| *code == button.action_command)
+            .map(|(_, name)| name.clone()),
+        api::ASSIGNMENT_MACRO => macros
+            .iter()
+            .find(|(id, _)| *id == button.action_command as i32)
+            .map(|(_, name)| name.clone()),
+        21..=23 => d
+            .profiles
+            .get(button.action_command as usize)
+            .cloned(),
+        _ => None,
+    };
+
+    match display {
+        Some(name) if !name.is_empty() => format!("{type_name} · {name}"),
+        _ if button.action_command == 0 => type_name,
+        _ => format!("{type_name} · {}", button.action_command),
     }
 }
