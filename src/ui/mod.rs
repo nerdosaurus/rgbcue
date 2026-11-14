@@ -3981,7 +3981,8 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                         let resp = ui.add(
                             egui::DragValue::new(&mut typed)
                                 .range(min as i32..=max as i32)
-                                .speed(10.0),
+                                .speed(10.0)
+                                .min_size(Vec2::new(value_w, 28.0)),
                         );
                         if resp.changed() {
                             stage.value = typed.clamp(min as i32, max as i32) as u16;
