@@ -2135,6 +2135,49 @@ pub struct Macro {
     pub repeat_delay: i32,
     #[serde(default)]
     pub actions: std::collections::HashMap<String, MacroAction>,
+    #[serde(default)]
+    pub indicator: Option<MacroIndicator>,
+}
+
+/// Per-macro status animation shown while the macro runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MacroIndicator {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub effect: String,
+    #[serde(default)]
+    pub color: IndicatorColor,
+    #[serde(default)]
+    pub speed: f64,
+    #[serde(default)]
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndicatorColor {
+    #[serde(default)]
+    pub red: f64,
+    #[serde(default)]
+    pub green: f64,
+    #[serde(default)]
+    pub blue: f64,
+}
+
+/// One live macro execution reported by `/api/macro/status`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct RunningMacro {
+    #[serde(default, rename = "macroId")]
+    pub macro_id: i32,
+    #[serde(default, rename = "macroName")]
+    pub macro_name: String,
+    #[serde(default, rename = "deviceSerial")]
+    pub device_serial: String,
+    #[serde(default, rename = "triggerKey")]
+    pub trigger_key: i64,
+    #[serde(default, rename = "startedAt")]
+    pub started_at: i64,
 }
 
 /// Return this macro's actions ordered by their numeric index.
@@ -2278,6 +2321,46 @@ pub fn delete_macro_action(id: i32, index: i32) -> Result<(), String> {
         "DELETE",
         &format!("{BASE}/api/macro/value"),
         &serde_json::json!({ "macroId": id, "macroIndex": index }),
+    )
+}
+
+/// Live macro executions, used for the running indicator.
+pub fn fetch_running_macros() -> Vec<RunningMacro> {
+    #[derive(serde::Deserialize)]
+    struct Response {
+        #[serde(default)]
+        status: i32,
+        #[serde(default)]
+        data: Vec<RunningMacro>,
+    }
+    let Ok(body) = get(&format!("{BASE}/api/macro/status")) else {
+        return Vec::new();
+    };
+    let Ok(resp) = serde_json::from_str::<Response>(&body) else {
+        return Vec::new();
+    };
+    if resp.status == 1 {
+        resp.data
+    } else {
+        Vec::new()
+    }
+}
+
+/// Stop a running macro, optionally limited to one device.
+pub fn stop_macro(macro_id: i32, serial: Option<&str>) -> Result<(), String> {
+    let mut payload = serde_json::json!({ "macroId": macro_id });
+    if let Some(serial) = serial {
+        payload["deviceId"] = serde_json::Value::String(serial.to_string());
+    }
+    send_json("POST", &format!("{BASE}/api/macro/stop"), &payload)
+}
+
+/// Save the optional running indicator for a macro.
+pub fn set_macro_indicator(macro_id: i32, indicator: &MacroIndicator) -> Result<(), String> {
+    send_json(
+        "POST",
+        &format!("{BASE}/api/macro/indicator"),
+        &serde_json::json!({ "macroId": macro_id, "indicator": indicator }),
     )
 }
 

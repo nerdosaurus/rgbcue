@@ -44,6 +44,7 @@ const LANGUAGE_CODES: &[(&str, &str)] = &[
     ("se_SE", "Svenska"),
 ];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
+const INDICATOR_EFFECTS: &[&str] = &["Pulse", "Static"];
 /// Dashboard mouse cards use the top-down view; flip to `false` for side-on.
 const MOUSE_CARD_TOP: bool = true;
 const SWATCHES: &[[u8; 3]] = &[
@@ -370,6 +371,13 @@ struct PreviewApp {
     macro_edit_id: Option<i32>,
     selected_action: Option<i32>,
     action_edits: HashMap<i32, ActionEdit>,
+    running_macros: Vec<api::RunningMacro>,
+    macro_status_rx: mpsc::Receiver<Vec<api::RunningMacro>>,
+    macro_indicator_enabled: bool,
+    macro_indicator_effect: usize,
+    macro_indicator_color: [u8; 3],
+    macro_indicator_speed: f32,
+    macro_indicator_target: String,
     text_delay: i32,
     text_variance: i32,
     delay_variance: i32,
@@ -402,6 +410,7 @@ struct PreviewApp {
 impl PreviewApp {
     fn new(page: Page) -> Self {
         let (refresh_tx, dash_rx) = spawn_poller();
+        let macro_status_rx = spawn_macro_status_poller();
         Self {
             page,
             collapsed: false,
@@ -429,6 +438,13 @@ impl PreviewApp {
             macro_edit_id: None,
             selected_action: None,
             action_edits: HashMap::new(),
+            running_macros: Vec::new(),
+            macro_status_rx,
+            macro_indicator_enabled: false,
+            macro_indicator_effect: 0,
+            macro_indicator_color: [255, 0, 0],
+            macro_indicator_speed: 1.0,
+            macro_indicator_target: "trigger".into(),
             text_delay: 40,
             text_variance: 0,
             delay_variance: 0,
@@ -1896,6 +1912,15 @@ impl PreviewApp {
                 ui.add_space(2.0);
                 ui.label(RichText::new(self.subtitle()).size(12.0).color(t::MUTED));
             });
+            let running = self.running_macros.first().cloned();
+            let running_name = running.as_ref().map(|run| {
+                self.macros
+                    .iter()
+                    .find(|m| m.id == run.macro_id)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| run.macro_name.clone())
+            });
+            let mut stop_id: Option<i32> = None;
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (label, color) = if self.error.is_some() {
                     ("Offline", t::BAD)
@@ -1912,7 +1937,24 @@ impl PreviewApp {
                     self.macro_names_loaded = false;
                     self.settings_loaded = false;
                 }
+                if let (Some(run), Some(name)) = (&running, &running_name) {
+                    ui.add_space(4.0);
+                    if t::button(ui, "Stop", t::Btn::Danger) {
+                        stop_id = Some(run.macro_id);
+                    }
+                    ui.add_space(4.0);
+                    t::pill(ui, &format!("Running: {name}"), t::GOLD_TEXT);
+                }
             });
+            if let Some(id) = stop_id {
+                match api::stop_macro(id, None) {
+                    Ok(()) => {
+                        self.notice = Some(("Macro stopped".into(), true));
+                        self.running_macros.retain(|r| r.macro_id != id);
+                    }
+                    Err(err) => self.notice = Some((err, false)),
+                }
+            }
         });
     }
 
@@ -2451,6 +2493,27 @@ impl PreviewApp {
             self.macro_repeat_delay = m.repeat_delay;
             self.selected_action = None;
             self.action_edits.clear();
+            let ind = m.indicator.clone().unwrap_or_default();
+            self.macro_indicator_enabled = ind.enabled;
+            self.macro_indicator_effect = INDICATOR_EFFECTS
+                .iter()
+                .position(|e| e.eq_ignore_ascii_case(&ind.effect))
+                .unwrap_or(0);
+            self.macro_indicator_color = [
+                ind.color.red.round().clamp(0.0, 255.0) as u8,
+                ind.color.green.round().clamp(0.0, 255.0) as u8,
+                ind.color.blue.round().clamp(0.0, 255.0) as u8,
+            ];
+            self.macro_indicator_speed = if ind.speed > 0.0 {
+                ind.speed as f32
+            } else {
+                1.0
+            };
+            self.macro_indicator_target = if ind.target.is_empty() {
+                "trigger".to_string()
+            } else {
+                ind.target.clone()
+            };
             for (idx, a) in api::ordered_actions(&m) {
                 self.action_edits.insert(
                     idx,
@@ -2473,10 +2536,76 @@ impl PreviewApp {
         let mut move_action: Option<(i32, i32, i32)> = None;
         let mut add_action: Option<(i32, api::MacroAction)> = None;
         let mut save_text_settings = false;
+        let mut save_indicator = false;
+        let mut stop_macro = false;
 
         let keys = self.macro_keys.clone();
         let media = self.macro_media.clone();
         let mouse = self.macro_mouse.clone();
+
+        // Target list for the running indicator. Prefer the zones of the
+        // device(s) that actually use this macro; fall back to common names.
+        let mut indicator_targets: Vec<(String, String)> =
+            vec![("trigger".into(), "Trigger element".into())];
+        if let Some(id) = self.macro_sel {
+            let mut assigned = false;
+            for d in &self.devices {
+                let mouse_assigned = d.mouse_buttons.iter().any(|b| {
+                    !b.default
+                        && b.action_type == api::ASSIGNMENT_MACRO
+                        && b.action_command as i32 == id
+                });
+                if mouse_assigned {
+                    assigned = true;
+                    for zone in &d.zones {
+                        let value = format!("zone:{}", zone.name);
+                        if !indicator_targets.iter().any(|(v, _)| *v == value) {
+                            indicator_targets.push((value, zone.name.clone()));
+                        }
+                    }
+                }
+                let keyboard_assigned = d
+                    .keyboard
+                    .as_ref()
+                    .map(|layout| {
+                        layout.rows.iter().flat_map(|r| r.keys.iter()).any(|key| {
+                            key.action_type == api::ASSIGNMENT_MACRO
+                                && key.action_command as i32 == id
+                        })
+                    })
+                    .unwrap_or(false);
+                if keyboard_assigned {
+                    assigned = true;
+                    if !indicator_targets.iter().any(|(v, _)| v == "row") {
+                        indicator_targets.push(("row".into(), "Trigger row".into()));
+                    }
+                }
+            }
+            if !assigned {
+                for (value, label) in [
+                    ("zone:Side", "Side panel"),
+                    ("zone:Logo", "Logo"),
+                    ("zone:Scroll", "Scroll wheel"),
+                    ("zone:Front", "Front edge"),
+                ] {
+                    if !indicator_targets.iter().any(|(v, _)| v == value) {
+                        indicator_targets.push((value.into(), label.into()));
+                    }
+                }
+            }
+            if assigned && !indicator_targets.iter().any(|(v, _)| v == "all") {
+                indicator_targets.push(("all".into(), "All keys".into()));
+            }
+        }
+        if !indicator_targets
+            .iter()
+            .any(|(v, _)| *v == self.macro_indicator_target)
+        {
+            indicator_targets.push((
+                self.macro_indicator_target.clone(),
+                self.macro_indicator_target.clone(),
+            ));
+        }
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -2523,18 +2652,38 @@ impl PreviewApp {
                                 FontId::proportional(13.0),
                                 t::TEXT,
                             );
-                            let repeat = if m.repeat < 0 {
-                                "loop".to_string()
+                            if let Some(run) = self
+                                .running_macros
+                                .iter()
+                                .find(|r| r.macro_id == m.id)
+                            {
+                                let alpha = pulse_alpha(ui);
+                                ui.painter().circle_filled(
+                                    egui::pos2(rect.right() - 16.0, rect.top() + 18.0),
+                                    3.5,
+                                    Color32::from_rgba_unmultiplied(191, 141, 25, alpha),
+                                );
+                                ui.painter().text(
+                                    egui::pos2(rect.left() + 12.0, rect.top() + 34.0),
+                                    Align2::LEFT_CENTER,
+                                    format!("Running · {}", elapsed_label(run.started_at)),
+                                    FontId::proportional(10.5),
+                                    t::GOLD_TEXT,
+                                );
                             } else {
-                                format!("{}x", m.repeat)
-                            };
-                            ui.painter().text(
-                                egui::pos2(rect.left() + 12.0, rect.top() + 34.0),
-                                Align2::LEFT_CENTER,
-                                format!("{} actions · {repeat}", m.actions.len()),
-                                FontId::proportional(10.5),
-                                t::MUTED,
-                            );
+                                let repeat = if m.repeat < 0 {
+                                    "loop".to_string()
+                                } else {
+                                    format!("{}x", m.repeat)
+                                };
+                                ui.painter().text(
+                                    egui::pos2(rect.left() + 12.0, rect.top() + 34.0),
+                                    Align2::LEFT_CENTER,
+                                    format!("{} actions · {repeat}", m.actions.len()),
+                                    FontId::proportional(10.5),
+                                    t::MUTED,
+                                );
+                            }
                             if resp.clicked() {
                                 select_macro = Some(m.id);
                             }
@@ -2586,6 +2735,11 @@ impl PreviewApp {
                 let Some(m) = self.macros.iter().find(|m| m.id == id).cloned() else {
                     return;
                 };
+                let running = self
+                    .running_macros
+                    .iter()
+                    .find(|r| r.macro_id == id)
+                    .cloned();
 
                 t::card_padded(16).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -2594,7 +2748,18 @@ impl PreviewApp {
                             ui.label(RichText::new(&m.name).size(18.0).strong().color(t::WHITE));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            t::pill(ui, &format!("{} actions", m.actions.len()), t::MUTED);
+                            if let Some(run) = &running {
+                                if t::button(ui, "Stop", t::Btn::Danger) {
+                                    stop_macro = true;
+                                }
+                                t::pill(
+                                    ui,
+                                    &format!("Running · {}", elapsed_label(run.started_at)),
+                                    t::GOLD_TEXT,
+                                );
+                            } else {
+                                t::pill(ui, &format!("{} actions", m.actions.len()), t::MUTED);
+                            }
                         });
                     });
                     ui.add_space(10.0);
@@ -2800,6 +2965,75 @@ impl PreviewApp {
                 });
 
                 ui.add_space(16.0);
+                t::card_padded(16).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    t::section_label(ui, "Running indicator");
+                    ui.add_space(6.0);
+                    t::settings_row(ui, "Enabled", |ui| {
+                        t::switch(ui, &mut self.macro_indicator_enabled)
+                    });
+                    if self.macro_indicator_enabled {
+                        t::settings_row(ui, "Effect", |ui| {
+                            let mut idx = self.macro_indicator_effect;
+                            let changed = t::select(ui, INDICATOR_EFFECTS, &mut idx);
+                            if changed {
+                                self.macro_indicator_effect = idx;
+                            }
+                            changed
+                        });
+                        t::settings_row(ui, "Colour", |ui| {
+                            egui::color_picker::color_edit_button_srgb(
+                                ui,
+                                &mut self.macro_indicator_color,
+                            );
+                            false
+                        });
+                        t::settings_row(ui, "Speed", |ui| {
+                            let mut speed = self.macro_indicator_speed;
+                            let changed = ui
+                                .add(
+                                    egui::DragValue::new(&mut speed)
+                                        .range(0.5..=3.0)
+                                        .speed(0.05),
+                                )
+                                .changed();
+                            if changed {
+                                self.macro_indicator_speed = speed;
+                            }
+                            changed
+                        });
+                        t::settings_row(ui, "Target", |ui| {
+                            let labels: Vec<String> = indicator_targets
+                                .iter()
+                                .map(|(_, label)| label.clone())
+                                .collect();
+                            let mut idx = indicator_targets
+                                .iter()
+                                .position(|(value, _)| *value == self.macro_indicator_target)
+                                .unwrap_or(0);
+                            let changed = t::select_strings(ui, &labels, &mut idx);
+                            if changed {
+                                self.macro_indicator_target =
+                                    indicator_targets[idx].0.clone();
+                            }
+                            changed
+                        });
+                        if t::button(ui, "Save indicator", t::Btn::Normal) {
+                            save_indicator = true;
+                        }
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "Pulse the trigger zone/key while this macro runs. Devices without a matching zone fall back to the trigger.",
+                        )
+                        .size(10.5)
+                        .italics()
+                        .color(t::DIM),
+                    );
+                });
+
+                ui.add_space(16.0);
 
                 t::card_padded(16).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -2884,6 +3118,42 @@ impl PreviewApp {
                     self.macro_dirty = true;
                 }
                 Err(err) => self.notice = Some((err, false)),
+            }
+        }
+        if stop_macro {
+            if let Some(id) = self.macro_sel {
+                match api::stop_macro(id, None) {
+                    Ok(()) => {
+                        self.notice = Some(("Macro stopped".into(), true));
+                        self.running_macros.retain(|r| r.macro_id != id);
+                    }
+                    Err(err) => self.notice = Some((err, false)),
+                }
+            }
+        }
+        if save_indicator {
+            if let Some(id) = self.macro_sel {
+                let c = self.macro_indicator_color;
+                let indicator = api::MacroIndicator {
+                    enabled: self.macro_indicator_enabled,
+                    effect: INDICATOR_EFFECTS[self.macro_indicator_effect].to_lowercase(),
+                    color: api::IndicatorColor {
+                        red: c[0] as f64,
+                        green: c[1] as f64,
+                        blue: c[2] as f64,
+                    },
+                    speed: self.macro_indicator_speed as f64,
+                    target: self.macro_indicator_target.clone(),
+                };
+                match api::set_macro_indicator(id, &indicator) {
+                    Ok(()) => {
+                        self.notice = Some(("Running indicator saved".into(), true));
+                        if let Some(m) = self.macros.iter_mut().find(|m| m.id == id) {
+                            m.indicator = Some(indicator);
+                        }
+                    }
+                    Err(err) => self.notice = Some((err, false)),
+                }
             }
         }
         if let Some((id, repeat, delay)) = save_repeat {
@@ -3215,6 +3485,14 @@ impl eframe::App for PreviewApp {
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
         }
 
+        while let Ok(running) = self.macro_status_rx.try_recv() {
+            self.running_macros = running;
+        }
+        if !self.running_macros.is_empty() {
+            ui.ctx()
+                .request_repaint_after(Duration::from_millis(80));
+        }
+
         while let Ok(msg) = self.dash_rx.try_recv() {
             match msg {
                 DashMsg::Ok(dash) => {
@@ -3259,6 +3537,37 @@ impl eframe::App for PreviewApp {
 }
 
 // ---- dashboard tiles -------------------------------------------------------
+
+fn elapsed_label(started_at_ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let secs = ((now - started_at_ms).max(0) / 1000) as u64;
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    } else {
+        format!("{:02}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+fn pulse_alpha(ui: &Ui) -> u8 {
+    let t = ui.input(|i| i.time) as f32;
+    (110.0 + 145.0 * (0.5 + 0.5 * (t * 4.0).sin())) as u8
+}
+
+fn spawn_macro_status_poller() -> mpsc::Receiver<Vec<api::RunningMacro>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            if tx.send(api::fetch_running_macros()).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+    rx
+}
 
 fn spawn_poller() -> (mpsc::Sender<()>, mpsc::Receiver<DashMsg>) {
     let (tx, rx) = mpsc::channel();
