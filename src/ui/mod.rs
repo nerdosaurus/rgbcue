@@ -2245,9 +2245,9 @@ impl PreviewApp {
                                         .all(|c| c.is_ascii_alphanumeric()))
                             {
                                 ui.label(
-                                    RichText::new("Use 3+ letters or numbers, no spaces.")
-                                        .size(10.0)
-                                        .color(t::WARN),
+                                    RichText::new("No spaces — use 3+ letters or numbers.")
+                                        .size(10.5)
+                                        .color(t::BAD),
                                 );
                             }
                             let deletable: Vec<String> = d
@@ -3961,7 +3961,7 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                 let dot_w = 10.0;
                 let name_w = 74.0;
                 let value_w = 64.0;
-                let swatch_w = 28.0;
+                let swatch_w = 30.0;
                 let track_w = (ui.available_width()
                     - dot_w
                     - name_w
@@ -4021,6 +4021,10 @@ fn dpi_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
                     Vec2::new(swatch_w, 28.0),
                     Layout::right_to_left(Align::Center),
                     |ui| {
+                        // The color button otherwise uses the global 40px
+                        // interact width and overflows into the value cell.
+                        ui.spacing_mut().interact_size.x = 28.0;
+                        ui.spacing_mut().interact_size.y = 20.0;
                         egui::color_picker::color_edit_button_srgb(ui, &mut stage.color);
                     },
                 );
