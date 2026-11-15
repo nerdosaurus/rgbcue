@@ -3147,7 +3147,11 @@ impl PreviewApp {
                 };
                 match api::set_macro_indicator(id, &indicator) {
                     Ok(()) => {
-                        self.notice = Some(("Running indicator saved".into(), true));
+                        self.notice = Some((
+                            "Running indicator saved — applies when the macro next starts"
+                                .into(),
+                            true,
+                        ));
                         if let Some(m) = self.macros.iter_mut().find(|m| m.id == id) {
                             m.indicator = Some(indicator);
                         }
