@@ -44,7 +44,8 @@ const LANGUAGE_CODES: &[(&str, &str)] = &[
     ("se_SE", "Svenska"),
 ];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
-const INDICATOR_EFFECTS: &[&str] = &["Pulse", "Static"];
+const INDICATOR_EFFECTS: &[&str] =
+    &["Pulse", "Blink", "Breathe", "Double blink", "Static"];
 /// Dashboard mouse cards use the top-down view; flip to `false` for side-on.
 const MOUSE_CARD_TOP: bool = true;
 const SWATCHES: &[[u8; 3]] = &[
@@ -2499,11 +2500,17 @@ impl PreviewApp {
                 .iter()
                 .position(|e| e.eq_ignore_ascii_case(&ind.effect))
                 .unwrap_or(0);
-            self.macro_indicator_color = [
+            let color = [
                 ind.color.red.round().clamp(0.0, 255.0) as u8,
                 ind.color.green.round().clamp(0.0, 255.0) as u8,
                 ind.color.blue.round().clamp(0.0, 255.0) as u8,
             ];
+            // An unset indicator is black, which reads as "off"; default to red.
+            self.macro_indicator_color = if color == [0, 0, 0] {
+                [255, 0, 0]
+            } else {
+                color
+            };
             self.macro_indicator_speed = if ind.speed > 0.0 {
                 ind.speed as f32
             } else {
