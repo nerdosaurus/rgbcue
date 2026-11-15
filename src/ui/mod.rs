@@ -2215,7 +2215,7 @@ impl PreviewApp {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut d.new_profile_name)
-                                        .hint_text("Letters/numbers")
+                                        .hint_text("3+ letters/numbers")
                                         .desired_width(132.0)
                                         .text_color(t::TEXT),
                                 );
@@ -2245,7 +2245,7 @@ impl PreviewApp {
                                         .all(|c| c.is_ascii_alphanumeric()))
                             {
                                 ui.label(
-                                    RichText::new("No spaces — use 3+ letters or numbers.")
+                                    RichText::new("Letters and numbers only, at least 3 characters.")
                                         .size(10.5)
                                         .color(t::BAD),
                                 );
@@ -2335,7 +2335,10 @@ impl PreviewApp {
         });
 
         if profile_error {
-            self.notice = Some(("Profile name needs 3+ letters or numbers".into(), false));
+            self.notice = Some((
+                "Profile names: letters and numbers only, at least 3 characters".into(),
+                false,
+            ));
         }
         self.assignment_panel(ui);
         self.keyboard_modals(ui);
