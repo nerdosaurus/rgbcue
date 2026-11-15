@@ -2059,7 +2059,15 @@ fn send_json(method: &str, url: &str, payload: &serde_json::Value) -> Result<(),
         .timeout(TIMEOUT)
         .set("Content-Type", "application/json")
         .send_string(&payload.to_string())
-        .map_err(|e| format!("request failed: {e}"))?
+        .map_err(|e| match e {
+            ureq::Error::Status(405, _) => {
+                "OpenLinkHub rejected this change (405 Method Not Allowed). \
+                 The running daemon is probably an older build — rebuild and \
+                 restart OpenLinkHub."
+                    .to_string()
+            }
+            other => format!("request failed: {other}"),
+        })?
         .into_string()
         .map_err(|e| format!("read failed: {e}"))?;
     let resp: StatusResponse = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
