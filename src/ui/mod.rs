@@ -44,8 +44,23 @@ const LANGUAGE_CODES: &[(&str, &str)] = &[
     ("se_SE", "Svenska"),
 ];
 const KEY_SCOPES: &[&str] = &["Current key", "Current row", "All keys", "Selected keys"];
-const INDICATOR_EFFECTS: &[&str] =
-    &["Pulse", "Blink", "Breathe", "Double blink", "Static"];
+const INDICATOR_EFFECTS: &[&str] = &[
+    "Pulse",
+    "Blink",
+    "Breathe",
+    "Double blink",
+    "Alternate",
+    "Two-colour",
+    "Progress",
+    "Static",
+];
+const INDICATOR_SWATCHES: &[[u8; 3]] = &[
+    [255, 0, 0],
+    [255, 176, 0],
+    [0, 220, 120],
+    [0, 190, 255],
+    [255, 255, 255],
+];
 /// Dashboard mouse cards use the top-down view; flip to `false` for side-on.
 const MOUSE_CARD_TOP: bool = true;
 const SWATCHES: &[[u8; 3]] = &[
@@ -377,8 +392,10 @@ struct PreviewApp {
     macro_indicator_enabled: bool,
     macro_indicator_effect: usize,
     macro_indicator_color: [u8; 3],
+    macro_indicator_color2: [u8; 3],
     macro_indicator_speed: f32,
     macro_indicator_target: String,
+    macro_indicator_echo: String,
     text_delay: i32,
     text_variance: i32,
     delay_variance: i32,
@@ -444,8 +461,10 @@ impl PreviewApp {
             macro_indicator_enabled: false,
             macro_indicator_effect: 0,
             macro_indicator_color: [255, 0, 0],
+            macro_indicator_color2: [255, 176, 0],
             macro_indicator_speed: 1.0,
             macro_indicator_target: "trigger".into(),
+            macro_indicator_echo: String::new(),
             text_delay: 40,
             text_variance: 0,
             delay_variance: 0,
@@ -2521,6 +2540,17 @@ impl PreviewApp {
             } else {
                 ind.target.clone()
             };
+            let color2 = [
+                ind.color2.red.round().clamp(0.0, 255.0) as u8,
+                ind.color2.green.round().clamp(0.0, 255.0) as u8,
+                ind.color2.blue.round().clamp(0.0, 255.0) as u8,
+            ];
+            self.macro_indicator_color2 = if color2 == [0, 0, 0] {
+                [255, 176, 0]
+            } else {
+                color2
+            };
+            self.macro_indicator_echo = ind.echo.clone();
             for (idx, a) in api::ordered_actions(&m) {
                 self.action_edits.insert(
                     idx,
@@ -2554,6 +2584,7 @@ impl PreviewApp {
         // device(s) that actually use this macro; fall back to common names.
         let mut indicator_targets: Vec<(String, String)> =
             vec![("trigger".into(), "Trigger element".into())];
+        let mut echo_targets: Vec<(String, String)> = vec![("".into(), "Off".into())];
         if let Some(id) = self.macro_sel {
             let mut assigned = false;
             for d in &self.devices {
@@ -2567,7 +2598,10 @@ impl PreviewApp {
                     for zone in &d.zones {
                         let value = format!("zone:{}", zone.name);
                         if !indicator_targets.iter().any(|(v, _)| *v == value) {
-                            indicator_targets.push((value, zone.name.clone()));
+                            indicator_targets.push((value.clone(), zone.name.clone()));
+                        }
+                        if !echo_targets.iter().any(|(v, _)| *v == value) {
+                            echo_targets.push((value, zone.name.clone()));
                         }
                     }
                 }
@@ -2585,6 +2619,11 @@ impl PreviewApp {
                     assigned = true;
                     if !indicator_targets.iter().any(|(v, _)| v == "row") {
                         indicator_targets.push(("row".into(), "Trigger row".into()));
+                    }
+                    for (value, label) in [("row", "Trigger row"), ("all", "All keys")] {
+                        if !echo_targets.iter().any(|(v, _)| v == value) {
+                            echo_targets.push((value.into(), label.into()));
+                        }
                     }
                 }
             }
@@ -2611,6 +2650,15 @@ impl PreviewApp {
             indicator_targets.push((
                 self.macro_indicator_target.clone(),
                 self.macro_indicator_target.clone(),
+            ));
+        }
+        if !echo_targets
+            .iter()
+            .any(|(v, _)| *v == self.macro_indicator_echo)
+        {
+            echo_targets.push((
+                self.macro_indicator_echo.clone(),
+                self.macro_indicator_echo.clone(),
             ));
         }
 
@@ -2995,6 +3043,26 @@ impl PreviewApp {
                             );
                             false
                         });
+                        t::settings_row(ui, "Presets", |ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for swatch in INDICATOR_SWATCHES {
+                                if t::swatch(ui, *swatch, self.macro_indicator_color == *swatch) {
+                                    self.macro_indicator_color = *swatch;
+                                }
+                            }
+                            false
+                        });
+                        let two_colour = INDICATOR_EFFECTS[self.macro_indicator_effect]
+                            .eq_ignore_ascii_case("two-colour");
+                        if two_colour {
+                            t::settings_row(ui, "Second colour", |ui| {
+                                egui::color_picker::color_edit_button_srgb(
+                                    ui,
+                                    &mut self.macro_indicator_color2,
+                                );
+                                false
+                            });
+                        }
                         t::settings_row(ui, "Speed", |ui| {
                             let mut speed = self.macro_indicator_speed;
                             let changed = ui
@@ -3025,6 +3093,21 @@ impl PreviewApp {
                             }
                             changed
                         });
+                        t::settings_row(ui, "Echo", |ui| {
+                            let labels: Vec<String> = echo_targets
+                                .iter()
+                                .map(|(_, label)| label.clone())
+                                .collect();
+                            let mut idx = echo_targets
+                                .iter()
+                                .position(|(value, _)| *value == self.macro_indicator_echo)
+                                .unwrap_or(0);
+                            let changed = t::select_strings(ui, &labels, &mut idx);
+                            if changed {
+                                self.macro_indicator_echo = echo_targets[idx].0.clone();
+                            }
+                            changed
+                        });
                         if t::button(ui, "Save indicator", t::Btn::Normal) {
                             save_indicator = true;
                         }
@@ -3032,7 +3115,7 @@ impl PreviewApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(
-                            "Pulse the trigger zone/key while this macro runs. Devices without a matching zone fall back to the trigger.",
+                            "Pulse the trigger zone/key while this macro runs. Alternate flashes the indicator colour against the zone's normal colour; two-colour blends a second colour; progress ramps up over a one-shot; echo lights a second zone faintly.",
                         )
                         .size(10.5)
                         .italics()
@@ -3141,6 +3224,7 @@ impl PreviewApp {
         if save_indicator {
             if let Some(id) = self.macro_sel {
                 let c = self.macro_indicator_color;
+                let c2 = self.macro_indicator_color2;
                 let indicator = api::MacroIndicator {
                     enabled: self.macro_indicator_enabled,
                     effect: INDICATOR_EFFECTS[self.macro_indicator_effect].to_lowercase(),
@@ -3149,8 +3233,14 @@ impl PreviewApp {
                         green: c[1] as f64,
                         blue: c[2] as f64,
                     },
+                    color2: api::IndicatorColor {
+                        red: c2[0] as f64,
+                        green: c2[1] as f64,
+                        blue: c2[2] as f64,
+                    },
                     speed: self.macro_indicator_speed as f64,
                     target: self.macro_indicator_target.clone(),
+                    echo: self.macro_indicator_echo.clone(),
                 };
                 match api::set_macro_indicator(id, &indicator) {
                     Ok(()) => {

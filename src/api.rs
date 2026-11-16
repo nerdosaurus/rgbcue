@@ -2157,9 +2157,13 @@ pub struct MacroIndicator {
     #[serde(default)]
     pub color: IndicatorColor,
     #[serde(default)]
+    pub color2: IndicatorColor,
+    #[serde(default)]
     pub speed: f64,
     #[serde(default)]
     pub target: String,
+    #[serde(default)]
+    pub echo: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

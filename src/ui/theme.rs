@@ -454,6 +454,7 @@ pub fn select_sized(ui: &mut Ui, options: &[&str], idx: &mut usize, width: f32) 
             state.corner_radius = CornerRadius::same(RADIUS_CTRL);
         }
         ui.spacing_mut().interact_size.y = 28.0;
+        ui.spacing_mut().combo_height = 320.0;
         egui::ComboBox::from_id_salt(id)
             .selected_text(egui::RichText::new(selected).size(12.0).color(TEXT))
             .width(width)
