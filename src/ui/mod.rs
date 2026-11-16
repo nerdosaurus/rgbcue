@@ -3115,7 +3115,7 @@ impl PreviewApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(
-                            "Pulse the trigger zone/key while this macro runs. Alternate flashes the indicator colour against the zone's normal colour; two-colour blends a second colour; progress ramps up over a one-shot; echo lights a second zone faintly.",
+                            "Pulse the trigger zone/key while this macro runs. Alternate flashes the indicator colour against the zone's normal colour; two-colour blends a second colour; progress ramps up over a one-shot or each loop cycle; echo lights a second zone faintly.",
                         )
                         .size(10.5)
                         .italics()
