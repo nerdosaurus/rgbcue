@@ -1954,6 +1954,7 @@ impl PreviewApp {
                 if t::button(ui, "Refresh", t::Btn::Ghost) {
                     let _ = self.refresh_tx.send(());
                     self.macro_dirty = true;
+                    self.macro_edit_id = None;
                     self.macro_names_loaded = false;
                     self.settings_loaded = false;
                 }
@@ -2441,6 +2442,59 @@ impl PreviewApp {
         }
     }
 
+    /// True when the playback/indicator edit buffers differ from the macro the
+    /// daemon reported. Refresh clears the buffers and re-seeds them, so an
+    /// external change is never silently overwritten by a stale Save.
+    fn macro_buffers_dirty(&self, m: &api::Macro) -> bool {
+        let loop_dirty = self.macro_repeat_loop != (m.repeat < 0);
+        let count_dirty = !self.macro_repeat_loop && self.macro_repeat_count != m.repeat.max(0);
+        let delay_dirty = self.macro_repeat_delay != m.repeat_delay;
+
+        let ordered = api::ordered_actions(m);
+        let actions_dirty = ordered.len() != self.action_edits.len()
+            || ordered.iter().any(|(idx, a)| {
+                self.action_edits
+                    .get(idx)
+                    .map(|e| {
+                        e.hold != a.action_hold
+                            || e.repeat != a.action_repeat
+                            || e.repeat_delay != a.action_repeat_delay
+                    })
+                    .unwrap_or(true)
+            });
+
+        let ind = m.indicator.clone().unwrap_or_default();
+        let color = |c: &api::IndicatorColor, fallback: [u8; 3]| {
+            let rgb = [
+                c.red.round().clamp(0.0, 255.0) as u8,
+                c.green.round().clamp(0.0, 255.0) as u8,
+                c.blue.round().clamp(0.0, 255.0) as u8,
+            ];
+            if rgb == [0, 0, 0] { fallback } else { rgb }
+        };
+        let effect = INDICATOR_EFFECTS[self.macro_indicator_effect].to_lowercase();
+        let stored_effect = if ind.effect.is_empty() {
+            "pulse"
+        } else {
+            ind.effect.as_str()
+        };
+        let target = if ind.target.is_empty() {
+            "trigger"
+        } else {
+            ind.target.as_str()
+        };
+        let stored_speed = if ind.speed > 0.0 { ind.speed as f32 } else { 1.0 };
+        let indicator_dirty = ind.enabled != self.macro_indicator_enabled
+            || !stored_effect.eq_ignore_ascii_case(&effect)
+            || color(&ind.color, [255, 0, 0]) != self.macro_indicator_color
+            || color(&ind.color2, [255, 176, 0]) != self.macro_indicator_color2
+            || (stored_speed - self.macro_indicator_speed).abs() > 0.001
+            || target != self.macro_indicator_target
+            || ind.echo != self.macro_indicator_echo;
+
+        loop_dirty || count_dirty || delay_dirty || actions_dirty || indicator_dirty
+    }
+
     fn ensure_macro_keys(&mut self) {
         if self.macro_keys_loaded {
             return;
@@ -2796,6 +2850,7 @@ impl PreviewApp {
                     .find(|r| r.macro_id == id)
                     .cloned();
 
+                let buffers_dirty = self.macro_buffers_dirty(&m);
                 t::card_padded(16).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -2803,6 +2858,10 @@ impl PreviewApp {
                             ui.label(RichText::new(&m.name).size(18.0).strong().color(t::WHITE));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if buffers_dirty {
+                                t::pill(ui, "Unsaved", t::GOLD_TEXT);
+                                ui.add_space(4.0);
+                            }
                             if let Some(run) = &running {
                                 if t::button(ui, "Stop", t::Btn::Danger) {
                                     stop_macro = true;
