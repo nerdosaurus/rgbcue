@@ -38,12 +38,12 @@ The window is built with `eframe`/`egui` 0.37.
 | `--rgb <serial>` | Apply the configured RGB preset to that device serial, then exit. |
 | `--macros` | List macro profiles, then exit. |
 | `--keys` | List available key/media/mouse input actions, then exit. |
-| `--preview [page]` | Open the ported OpenLinkHub UI shell (mock data, no API). Pages: `dashboard` (default), `device`, `macros`, `settings`. |
+| `--preview [page]` | Open the ported OpenLinkHub UI (live API, demo data when the daemon is offline). Pages: `dashboard` (default), `device`, `macros`, `settings`. |
 
 ## UI preview
 
-The OpenLinkHub web UI is being ported to native egui screens. The shell is
-available before it is fully wired up:
+The OpenLinkHub web UI is ported to native egui screens. It still lives behind
+`--preview` while the older functional UI remains the default:
 
 ```
 cargo run --release -- --preview dashboard
@@ -68,7 +68,8 @@ are not wired yet.
 
 Devices can be added to or removed from the dashboard from the dashboard's add
 tile or the device page. Dashboard cards can be reordered by dragging their grip
-handle. Macros and settings are still visual previews with mock data.
+handle. The macro library (playback, actions, running status/indicator, Stop) and
+the global settings are wired to the API as well.
 
 ## What you can do
 
@@ -83,5 +84,6 @@ handle. Macros and settings are still visual previews with mock data.
 
 ## Configuration
 
-App settings are kept under the platform config directory (via the `dirs` crate).
-Device, macro and profile data live in OpenLinkHub's own database.
+The app keeps no local configuration. Device, macro, profile and global settings
+are read from and written to OpenLinkHub over its REST API; only the CLI flags
+above affect startup.
