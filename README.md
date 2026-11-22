@@ -62,9 +62,11 @@ through the API. For keyboards, the device page renders the live key layout
 for applying a colour to the current key, row or whole keyboard
 (`/api/keyboard/color`), plus keyboard profile switch/save/save-as/delete and a
 basic key-assignment editor (`/api/keyboard/updateKeyAssignment`). All selects
-are real dropdowns. Colour swatches and effect speed remain preview-only;
-key-assignment modifiers, toggle delay and retain-original are included; layers
-are not wired yet.
+are real dropdowns. The device page's **Effect settings** card edits the selected
+profile's start/end colours, speed, direction and alternate colours, and
+re-applies it. Colour swatches in the preview card remain cosmetic; gradient
+effects keep their stops read-only for now. Key-assignment modifiers, toggle
+delay and retain-original are included; layers are not wired yet.
 
 Devices can be added to or removed from the dashboard from the dashboard's add
 tile or the device page. Dashboard cards can be reordered by dragging their grip
@@ -74,7 +76,8 @@ the global settings are wired to the API as well.
 ## What you can do
 
 - **Devices** — see the Corsair devices OpenLinkHub detects.
-- **Lighting** — solid colour and RGB presets per device/zone.
+- **Lighting** — effect selection, effect colours/speed/direction, brightness,
+  per-zone colours on mice and per-key colours on keyboards.
 - **Macros** — create, edit, reorder and delete macros, with actions for keys,
   media, mouse buttons, text, delays and mouse movement, plus repeat, loop and
   hold.

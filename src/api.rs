@@ -1321,6 +1321,15 @@ pub struct Color {
 }
 
 impl Color {
+    /// Clamped integer RGB, for colour pickers and the update payload.
+    pub fn to_rgb(&self) -> [u8; 3] {
+        [
+            self.red.round().clamp(0.0, 255.0) as u8,
+            self.green.round().clamp(0.0, 255.0) as u8,
+            self.blue.round().clamp(0.0, 255.0) as u8,
+        ]
+    }
+
     pub fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self {
             red: f64::from(r),
@@ -1335,7 +1344,7 @@ impl Color {
 }
 
 /// One named lighting profile (the `"static"` one is solid colour).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RgbProfile {
     #[serde(rename = "profileName", default)]
     pub name: String,
@@ -1343,6 +1352,21 @@ pub struct RgbProfile {
     pub speed: f64,
     #[serde(rename = "start", default)]
     pub start: Color,
+    #[serde(rename = "end", default)]
+    pub end: Color,
+    #[serde(rename = "middle", default)]
+    pub middle: Color,
+    #[serde(rename = "rgbDirection", default)]
+    pub direction: u8,
+    #[serde(rename = "alternateColors", default)]
+    pub alternate: bool,
+    #[serde(rename = "minTemp", default)]
+    pub min_temp: f64,
+    #[serde(rename = "maxTemp", default)]
+    pub max_temp: f64,
+    /// Present on gradient effects; preserved when the other parameters are saved.
+    #[serde(default)]
+    pub gradients: Option<serde_json::Value>,
 }
 
 /// The lighting payload returned by `GET /api/color/{serial}`.
@@ -1400,6 +1424,39 @@ pub fn set_solid_color(serial: &str, r: u8, g: u8, b: u8) -> Result<(), String> 
     });
     send_json("PUT", &format!("{BASE}/api/color/change"), &update)?;
     activate_profile(serial, "static")
+}
+
+/// Update a lighting profile's parameters without changing the active effect.
+#[allow(clippy::too_many_arguments)]
+pub fn update_rgb_profile(
+    serial: &str,
+    profile: &str,
+    start: [u8; 3],
+    end: [u8; 3],
+    middle: [u8; 3],
+    speed: f64,
+    direction: u8,
+    alternate: bool,
+    min_temp: f64,
+    max_temp: f64,
+    gradients: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let mut payload = serde_json::json!({
+        "deviceId": serial,
+        "profile": profile,
+        "startColor": Color::rgb(start[0], start[1], start[2]),
+        "endColor": Color::rgb(end[0], end[1], end[2]),
+        "middleColor": Color::rgb(middle[0], middle[1], middle[2]),
+        "speed": speed.clamp(1.0, 10.0),
+        "alternateColors": alternate,
+        "rgbDirection": direction,
+        "rgbMinTemp": min_temp.clamp(0.0, 100.0),
+        "rgbMaxTemp": max_temp.clamp(0.0, 100.0),
+    });
+    if let Some(gradients) = gradients {
+        payload["colorZones"] = gradients.clone();
+    }
+    send_json("PUT", &format!("{BASE}/api/color/change"), &payload)
 }
 
 /// Activate a named lighting profile (e.g. `"rainbow"`, `"static"`).
@@ -2470,6 +2527,33 @@ pub fn fetch_mouse_buttons() -> Result<Vec<(u16, InputKey)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parses_rgb_profile_parameters() {
+        let profile: RgbProfile = serde_json::from_str(
+            r#"{
+                "profileName": "Rainbow",
+                "speed": 2.5,
+                "start": {"red": 255, "green": 0, "blue": 10},
+                "end": {"red": 0, "green": 0, "blue": 255},
+                "middle": {"red": 0, "green": 128, "blue": 0},
+                "rgbDirection": 4,
+                "alternateColors": true,
+                "minTemp": 10,
+                "maxTemp": 90,
+                "gradients": {"0": {"red": 1, "green": 2, "blue": 3}}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(profile.name, "Rainbow");
+        assert_eq!(profile.speed, 2.5);
+        assert_eq!(profile.start.to_rgb(), [255, 0, 10]);
+        assert_eq!(profile.end.to_rgb(), [0, 0, 255]);
+        assert_eq!(profile.middle.to_rgb(), [0, 128, 0]);
+        assert_eq!(profile.direction, 4);
+        assert!(profile.alternate);
+        assert!(profile.gradients.is_some());
+    }
+
 
     #[test]
     fn parses_keyboard_profile() {

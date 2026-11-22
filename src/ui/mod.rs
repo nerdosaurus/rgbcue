@@ -136,6 +136,21 @@ fn supports_flash_tap(product: &str) -> bool {
         || n.contains("GALLEON")
 }
 
+/// Lighting profile parameters for the selected effect, loaded from OpenLinkHub.
+#[derive(Clone, Default)]
+struct LightingEdit {
+    attempted: bool,
+    loaded: bool,
+    synced: String,
+    profiles: HashMap<String, api::RgbProfile>,
+    start: [u8; 3],
+    end: [u8; 3],
+    middle: [u8; 3],
+    speed: f64,
+    direction: u8,
+    alternate: bool,
+}
+
 #[derive(Clone)]
 struct Device {
     name: String,
@@ -148,7 +163,6 @@ struct Device {
     delete_profile: usize,
     brightness: f32,
     effect: usize,
-    speed: f32,
     polling: usize,
     layout: usize,
     cluster: bool,
@@ -180,6 +194,7 @@ struct Device {
     open_rgb: bool,
     wireless: bool,
     stat: (String, String),
+    lighting: LightingEdit,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -278,6 +293,18 @@ const MACRO_TYPES: &[(u8, &str)] = &[
 enum DeviceAction {
     Profile(String),
     Rgb(String),
+    RgbParams {
+        profile: String,
+        start: [u8; 3],
+        end: [u8; 3],
+        middle: [u8; 3],
+        speed: f64,
+        direction: u8,
+        alternate: bool,
+        min_temp: f64,
+        max_temp: f64,
+        gradients: Option<serde_json::Value>,
+    },
     Layout(String),
     Polling(i64),
     Cluster(bool),
@@ -543,7 +570,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: 80.0,
                     effect: 1,
-                    speed: 60.0,
                     polling: 3,
                     layout: 0,
                     cluster: false,
@@ -575,6 +601,7 @@ impl PreviewApp {
                     open_rgb: false,
                     wireless: false,
                     stat: ("1000 Hz".into(), "Polling rate".into()),
+                    lighting: LightingEdit::default(),
                 },
                 Device {
                     name: "Scimitar RGB Elite".into(),
@@ -587,7 +614,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: 75.0,
                     effect: 0,
-                    speed: 50.0,
                     polling: 3,
                     layout: 0,
                     cluster: false,
@@ -619,6 +645,7 @@ impl PreviewApp {
                     open_rgb: false,
                     wireless: false,
                     stat: ("18000".into(), "DPI".into()),
+                    lighting: LightingEdit::default(),
                 },
                 Device {
                     name: "Scimitar Elite Wireless SE".into(),
@@ -631,7 +658,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: 65.0,
                     effect: 7,
-                    speed: 50.0,
                     polling: 3,
                     layout: 0,
                     cluster: false,
@@ -663,6 +689,7 @@ impl PreviewApp {
                     open_rgb: false,
                     wireless: false,
                     stat: ("1600".into(), "DPI".into()),
+                    lighting: LightingEdit::default(),
                 },
                 Device {
                     name: "Commander PRO".into(),
@@ -675,7 +702,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: 70.0,
                     effect: 0,
-                    speed: 50.0,
                     polling: 0,
                     layout: 0,
                     cluster: false,
@@ -707,6 +733,7 @@ impl PreviewApp {
                     open_rgb: false,
                     wireless: false,
                     stat: ("1240".into(), "Fan RPM".into()),
+                    lighting: LightingEdit::default(),
                 },
                 Device {
                     name: "H115i RGB Platinum".into(),
@@ -719,7 +746,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: 75.0,
                     effect: 0,
-                    speed: 55.0,
                     polling: 0,
                     layout: 0,
                     cluster: false,
@@ -751,6 +777,7 @@ impl PreviewApp {
                     open_rgb: false,
                     wireless: false,
                     stat: ("32 °C".into(), "Coolant".into()),
+                    lighting: LightingEdit::default(),
                 },
             ],
         }
@@ -775,6 +802,7 @@ impl PreviewApp {
         let message = match &action {
             DeviceAction::Profile(_) => "Profile updated",
             DeviceAction::Rgb(_) => "RGB profile applied",
+            DeviceAction::RgbParams { .. } => "Lighting effect saved",
             DeviceAction::Layout(_) => "Layout updated",
             DeviceAction::Polling(_) => "Polling rate updated",
             DeviceAction::Cluster(_) => "RGB cluster updated",
@@ -803,6 +831,31 @@ impl PreviewApp {
         let result = match action {
             DeviceAction::Profile(name) => api::change_user_profile(&d.serial, &name),
             DeviceAction::Rgb(name) => api::set_rgb_profile(&d.serial, 0, &name),
+            DeviceAction::RgbParams {
+                profile,
+                start,
+                end,
+                middle,
+                speed,
+                direction,
+                alternate,
+                min_temp,
+                max_temp,
+                gradients,
+            } => api::update_rgb_profile(
+                &d.serial,
+                &profile,
+                start,
+                end,
+                middle,
+                speed,
+                direction,
+                alternate,
+                min_temp,
+                max_temp,
+                gradients.as_ref(),
+            )
+            .and_then(|()| api::set_rgb_profile(&d.serial, 0, &profile)),
             DeviceAction::Layout(name) => api::set_keyboard_layout(&d.serial, &name),
             DeviceAction::Polling(rate) => {
                 api::set_polling_rate(&d.serial, d.kind.api_kind(), rate)
@@ -1558,7 +1611,6 @@ impl PreviewApp {
                     delete_profile: 0,
                     brightness: s.brightness as f32,
                     effect,
-                    speed: 50.0,
                     polling,
                     layout,
                     cluster: s.cluster,
@@ -1594,6 +1646,7 @@ impl PreviewApp {
                     open_rgb: s.open_rgb,
                     wireless: !s.usb,
                     stat: (s.stat_value, s.stat_label),
+                    lighting: LightingEdit::default(),
                 });
             }
         }
@@ -1613,6 +1666,16 @@ impl PreviewApp {
                 && !order.contains(&pos)
             {
                 order.push(pos);
+            }
+        }
+        let old_lighting: HashMap<String, LightingEdit> = self
+            .devices
+            .iter()
+            .map(|d| (d.serial.clone(), d.lighting.clone()))
+            .collect();
+        for d in next.iter_mut() {
+            if let Some(lighting) = old_lighting.get(&d.serial) {
+                d.lighting = lighting.clone();
             }
         }
         self.devices = next;
@@ -2090,6 +2153,7 @@ impl PreviewApp {
 
     fn device_page(&mut self, ui: &mut Ui, idx: usize) {
         self.ensure_macro_keys();
+        sync_lighting(&mut self.devices[idx]);
         let needs_macros = self.devices[idx]
             .mouse_buttons
             .iter()
@@ -2358,6 +2422,12 @@ impl PreviewApp {
             ui.add_space(16.0);
 
             ui.vertical(|ui| {
+                if let Some(next) = effect_settings_card(ui, d) {
+                    action = Some(next);
+                }
+                if !d.rgb_modes.is_empty() {
+                    ui.add_space(16.0);
+                }
                 let has_layout = d.kind == Kind::Keyboard && d.keyboard.is_some();
                 if has_layout {
                     if let Some(next) = keyboard_editor(ui, d, color) {
@@ -4289,6 +4359,174 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
     action
 }
 
+/// Load the device's lighting profiles once and keep the edit buffers in sync
+/// with the selected effect.
+fn sync_lighting(d: &mut Device) {
+    if !d.lighting.attempted {
+        d.lighting.attempted = true;
+        if let Ok(data) = api::fetch_rgb_profiles(&d.serial) {
+            d.lighting.profiles = data.profiles;
+            d.lighting.loaded = true;
+        }
+    }
+    if !d.lighting.loaded {
+        return;
+    }
+    let mode = d.rgb_modes.get(d.effect).cloned().unwrap_or_default();
+    if d.lighting.synced == mode {
+        return;
+    }
+    if let Some(profile) = d.lighting.profiles.get(&mode) {
+        d.lighting.start = profile.start.to_rgb();
+        d.lighting.end = profile.end.to_rgb();
+        d.lighting.middle = profile.middle.to_rgb();
+        d.lighting.speed = if profile.speed > 0.0 {
+            profile.speed.clamp(1.0, 10.0)
+        } else {
+            1.0
+        };
+        d.lighting.direction = profile.direction;
+        d.lighting.alternate = profile.alternate;
+    }
+    d.lighting.synced = mode;
+}
+
+fn supports_alternate(mode: &str) -> bool {
+    matches!(
+        mode,
+        "colorpulse"
+            | "colorshift"
+            | "tlk"
+            | "tlr"
+            | "rain"
+            | "visor"
+            | "colorwave"
+            | "watercolor"
+    )
+}
+
+fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
+    let mode = d.rgb_modes.get(d.effect).cloned().unwrap_or_default();
+    let profile = d.lighting.profiles.get(&mode).cloned()?;
+    let has_gradients = profile
+        .gradients
+        .as_ref()
+        .and_then(|g| g.as_object())
+        .map(|g| !g.is_empty())
+        .unwrap_or(false);
+    let temperature = matches!(
+        mode.as_str(),
+        "cpu-temperature" | "gpu-temperature" | "liquid-temperature" | "probe-temperature"
+    );
+    const DIRECTIONS: &[(u8, &str)] = &[
+        (1, "Top to bottom"),
+        (2, "Bottom to top"),
+        (4, "Left to right"),
+        (5, "Right to left"),
+    ];
+    let mut save = false;
+
+    t::card_padded(16).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                t::section_label(ui, "Effect settings");
+                ui.label(RichText::new(&mode).size(16.0).strong().color(t::WHITE));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                t::pill(ui, "Live", t::GOOD);
+            });
+        });
+        ui.add_space(8.0);
+
+        if has_gradients {
+            ui.label(
+                RichText::new(
+                    "This effect uses a colour gradient. Its stops are preserved when the other settings are saved.",
+                )
+                .size(10.5)
+                .italics()
+                .color(t::DIM),
+            );
+        } else {
+            t::settings_row(ui, "Start colour", |ui| {
+                egui::color_picker::color_edit_button_srgb(ui, &mut d.lighting.start);
+                false
+            });
+            t::settings_row(ui, "End colour", |ui| {
+                egui::color_picker::color_edit_button_srgb(ui, &mut d.lighting.end);
+                false
+            });
+            if temperature {
+                t::settings_row(ui, "Middle colour", |ui| {
+                    egui::color_picker::color_edit_button_srgb(ui, &mut d.lighting.middle);
+                    false
+                });
+            }
+        }
+
+        t::settings_row(ui, "Speed", |ui| {
+            let mut speed = d.lighting.speed;
+            let changed = ui
+                .add(egui::DragValue::new(&mut speed).range(1.0..=10.0).speed(0.1))
+                .changed();
+            if changed {
+                d.lighting.speed = speed;
+            }
+            changed
+        });
+
+        if profile.direction > 0 {
+            t::settings_row(ui, "Direction", |ui| {
+                let labels: Vec<String> =
+                    DIRECTIONS.iter().map(|(_, label)| label.to_string()).collect();
+                let mut idx = DIRECTIONS
+                    .iter()
+                    .position(|(value, _)| *value == d.lighting.direction)
+                    .unwrap_or(0);
+                let changed = t::select_strings(ui, &labels, &mut idx);
+                if changed {
+                    d.lighting.direction = DIRECTIONS[idx].0;
+                }
+                changed
+            });
+        }
+
+        if supports_alternate(&mode) {
+            t::settings_row(ui, "Alternate colours", |ui| {
+                t::switch(ui, &mut d.lighting.alternate)
+            });
+        }
+
+        if t::button(ui, "Save effect", t::Btn::Normal) {
+            save = true;
+        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Saves the effect profile in OpenLinkHub and re-applies it.")
+                .size(10.5)
+                .italics()
+                .color(t::DIM),
+        );
+    });
+
+    if save {
+        Some(DeviceAction::RgbParams {
+            profile: mode,
+            start: d.lighting.start,
+            end: d.lighting.end,
+            middle: d.lighting.middle,
+            speed: d.lighting.speed,
+            direction: d.lighting.direction,
+            alternate: d.lighting.alternate,
+            min_temp: profile.min_temp,
+            max_temp: profile.max_temp,
+            gradients: profile.gradients.clone(),
+        })
+    } else {
+        None
+    }
+}
+
 fn lighting_card(
     ui: &mut Ui,
     d: &mut Device,
@@ -4356,8 +4594,6 @@ fn lighting_card(
                     if t::slider(ui, &mut d.brightness, 0.0, 100.0, "%") {
                         *brightness_out = Some(d.brightness);
                     }
-                    t::section_label(ui, "Speed");
-                    t::slider(ui, &mut d.speed, 0.0, 100.0, "%");
                 });
             });
         });
@@ -4391,7 +4627,7 @@ fn lighting_card(
 
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Effect, brightness, layout and polling apply to OpenLinkHub; colour and speed are preview-only.")
+            RichText::new("Effect and brightness apply to OpenLinkHub; use Effect settings for colours and speed.")
                 .size(10.5)
                 .italics()
                 .color(t::DIM),
