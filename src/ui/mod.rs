@@ -411,6 +411,8 @@ struct PreviewApp {
     macro_repeat_loop: bool,
     macro_repeat_count: i32,
     macro_repeat_delay: i32,
+    macro_text_delay: i32,
+    macro_text_delay_variance: i32,
     macro_edit_id: Option<i32>,
     selected_action: Option<i32>,
     action_edits: HashMap<i32, ActionEdit>,
@@ -480,6 +482,8 @@ impl PreviewApp {
             macro_repeat_loop: false,
             macro_repeat_count: 0,
             macro_repeat_delay: 0,
+            macro_text_delay: 0,
+            macro_text_delay_variance: 0,
             macro_edit_id: None,
             selected_action: None,
             action_edits: HashMap::new(),
@@ -2519,6 +2523,8 @@ impl PreviewApp {
         let loop_dirty = self.macro_repeat_loop != (m.repeat < 0);
         let count_dirty = !self.macro_repeat_loop && self.macro_repeat_count != m.repeat.max(0);
         let delay_dirty = self.macro_repeat_delay != m.repeat_delay;
+        let typing_dirty = self.macro_text_delay != m.text_delay_ms
+            || self.macro_text_delay_variance != m.text_delay_variance_ms;
 
         let ordered = api::ordered_actions(m);
         let actions_dirty = ordered.len() != self.action_edits.len()
@@ -2562,7 +2568,12 @@ impl PreviewApp {
             || target != self.macro_indicator_target
             || ind.echo != self.macro_indicator_echo;
 
-        loop_dirty || count_dirty || delay_dirty || actions_dirty || indicator_dirty
+        loop_dirty
+            || count_dirty
+            || delay_dirty
+            || typing_dirty
+            || actions_dirty
+            || indicator_dirty
     }
 
     fn ensure_macro_keys(&mut self) {
@@ -2635,6 +2646,8 @@ impl PreviewApp {
             self.macro_repeat_loop = m.repeat < 0;
             self.macro_repeat_count = m.repeat.max(0);
             self.macro_repeat_delay = m.repeat_delay;
+            self.macro_text_delay = m.text_delay_ms;
+            self.macro_text_delay_variance = m.text_delay_variance_ms;
             self.selected_action = None;
             self.action_edits.clear();
             let ind = m.indicator.clone().unwrap_or_default();
@@ -2690,7 +2703,7 @@ impl PreviewApp {
         let mut select_macro: Option<i32> = None;
         let mut create_macro: Option<String> = None;
         let mut delete_macro: Option<i32> = None;
-        let mut save_repeat: Option<(i32, i32, i32)> = None;
+        let mut save_repeat: Option<(i32, i32, i32, i32, i32)> = None;
         let mut select_action: Option<i32> = None;
         let mut delete_action: Option<(i32, i32)> = None;
         let mut save_action: Option<(i32, i32, bool, u8, u16)> = None;
@@ -2982,14 +2995,61 @@ impl PreviewApp {
                         {
                             self.macro_repeat_delay = delay.clamp(0, 60000);
                         }
-                        if t::button(ui, "Save", t::Btn::Normal) {
-                            let repeat = if self.macro_repeat_loop {
-                                -1
-                            } else {
-                                self.macro_repeat_count
-                            };
-                            save_repeat = Some((id, repeat, self.macro_repeat_delay));
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Typing").size(11.5).color(t::MUTED));
+                        let mut delay = self.macro_text_delay;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut delay)
+                                    .range(0..=1000)
+                                    .speed(5.0)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.macro_text_delay = delay.clamp(0, 1000);
                         }
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("Jitter").size(11.5).color(t::MUTED));
+                        let mut variance = self.macro_text_delay_variance;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut variance)
+                                    .range(0..=500)
+                                    .speed(5.0)
+                                    .suffix(" ms"),
+                            )
+                            .changed()
+                        {
+                            self.macro_text_delay_variance = variance.clamp(0, 500);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Typing 0 uses the OpenLinkHub default (40 ms).")
+                                .size(10.5)
+                                .italics()
+                                .color(t::DIM),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if t::button(ui, "Save playback", t::Btn::Normal) {
+                                let repeat = if self.macro_repeat_loop {
+                                    -1
+                                } else {
+                                    self.macro_repeat_count
+                                };
+                                save_repeat = Some((
+                                    id,
+                                    repeat,
+                                    self.macro_repeat_delay,
+                                    self.macro_text_delay,
+                                    self.macro_text_delay_variance,
+                                ));
+                            }
+                        });
                     });
 
                     ui.add_space(12.0);
@@ -3256,35 +3316,8 @@ impl PreviewApp {
 
                 t::card_padded(16).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    t::section_label(ui, "Typing & delay");
+                    t::section_label(ui, "Delay actions");
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Char delay").size(11.5).color(t::MUTED));
-                        let mut delay = self.text_delay;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut delay)
-                                    .range(10..=1000)
-                                    .suffix(" ms"),
-                            )
-                            .changed()
-                        {
-                            self.text_delay = delay.clamp(10, 1000);
-                        }
-                        ui.add_space(10.0);
-                        ui.label(RichText::new("Jitter").size(11.5).color(t::MUTED));
-                        let mut variance = self.text_variance;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut variance)
-                                    .range(0..=500)
-                                    .suffix(" ms"),
-                            )
-                            .changed()
-                        {
-                            self.text_variance = variance.clamp(0, 500);
-                        }
-                    });
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Delay jitter").size(11.5).color(t::MUTED));
                         let mut variance = self.delay_variance;
@@ -3304,7 +3337,7 @@ impl PreviewApp {
                     });
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Applies to text typed by macros and to delay actions.")
+                        RichText::new("Adds random variation to the Delay actions in macros.")
                             .size(10.5)
                             .italics()
                             .color(t::DIM),
@@ -3386,8 +3419,8 @@ impl PreviewApp {
                 }
             }
         }
-        if let Some((id, repeat, delay)) = save_repeat {
-            match api::update_macro_settings(id, repeat, delay) {
+        if let Some((id, repeat, delay, text_delay, text_variance)) = save_repeat {
+            match api::update_macro_settings(id, repeat, delay, text_delay, text_variance) {
                 Ok(()) => {
                     self.notice = Some(("Playback saved".into(), true));
                     self.macro_dirty = true;

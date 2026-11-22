@@ -2198,6 +2198,10 @@ pub struct Macro {
     pub repeat: i32,
     #[serde(rename = "repeatDelay", default)]
     pub repeat_delay: i32,
+    #[serde(rename = "textDelayMs", default)]
+    pub text_delay_ms: i32,
+    #[serde(rename = "textDelayVarianceMs", default)]
+    pub text_delay_variance_ms: i32,
     #[serde(default)]
     pub actions: std::collections::HashMap<String, MacroAction>,
     #[serde(default)]
@@ -2296,11 +2300,24 @@ pub fn delete_macro(id: i32) -> Result<(), String> {
     )
 }
 
-pub fn update_macro_settings(id: i32, repeat: i32, repeat_delay: i32) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn update_macro_settings(
+    id: i32,
+    repeat: i32,
+    repeat_delay: i32,
+    text_delay: i32,
+    text_variance: i32,
+) -> Result<(), String> {
     send_json(
         "POST",
         &format!("{BASE}/api/macro/updateSettings"),
-        &serde_json::json!({ "macroId": id, "macroRepeat": repeat, "macroRepeatDelay": repeat_delay }),
+        &serde_json::json!({
+            "macroId": id,
+            "macroRepeat": repeat,
+            "macroRepeatDelay": repeat_delay,
+            "macroTextDelay": text_delay,
+            "macroTextDelayVariance": text_variance,
+        }),
     )
 }
 

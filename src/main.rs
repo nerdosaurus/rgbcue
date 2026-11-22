@@ -709,7 +709,13 @@ impl RgbcueApp {
             if ui.button("Save repeat").clicked() {
                 let r = if self.repeat_loop { -1 } else { self.repeat_count };
                 self.macro_result = Some(
-                    api::update_macro_settings(id, r, self.repeat_delay)
+                    api::update_macro_settings(
+                        id,
+                        r,
+                        self.repeat_delay,
+                        m.text_delay_ms,
+                        m.text_delay_variance_ms,
+                    )
                         .map(|_| "Repeat saved".to_string()),
                 );
                 self.macro_dirty = true;
