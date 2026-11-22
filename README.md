@@ -81,7 +81,7 @@ the global settings are wired to the API as well.
 - **Macros** — create, edit, reorder and delete macros, with actions for keys,
   media, mouse buttons, text, delays and mouse movement, plus repeat, loop and
   hold.
-- **Text typing** — configure typing delay and jitter.
+- **Text typing** — per-macro typing delay and jitter (0 keeps the daemon default).
 - **Capture** — record the mouse position and assign move/teleport actions, armed
   with a hotkey that works regardless of window focus.
 
