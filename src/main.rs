@@ -31,6 +31,8 @@ struct ActionEdit {
     hold: bool,
     repeat: u8,
     repeat_delay: u16,
+    text_delay: i32,
+    text_jitter: i32,
 }
 
 struct RgbcueApp {
@@ -56,6 +58,8 @@ struct RgbcueApp {
     new_action_type: u8,
     new_action_command: u16,
     new_action_delay: u16,
+    new_action_text_delay: i32,
+    new_action_text_jitter: i32,
     new_action_text: String,
     new_action_enter: bool,
     new_action_x: i32,
@@ -104,6 +108,8 @@ impl RgbcueApp {
             new_action_type: api::ACTION_KEYBOARD,
             new_action_command: 0,
             new_action_delay: 100,
+            new_action_text_delay: 40,
+            new_action_text_jitter: 0,
             new_action_text: String::new(),
             new_action_enter: false,
             new_action_x: 0,
@@ -488,6 +494,8 @@ impl RgbcueApp {
         y: i32,
         abs: bool,
         enter: bool,
+        text_delay: i32,
+        text_jitter: i32,
     ) {
         let a = api::MacroAction {
             action_type: ty,
@@ -497,6 +505,8 @@ impl RgbcueApp {
             mouse_position_x: x,
             mouse_position_y: y,
             mouse_position_absolute: abs,
+            text_delay_ms: if ty == api::ACTION_TEXT { text_delay } else { 0 },
+            text_delay_jitter_ms: if ty == api::ACTION_TEXT { text_jitter } else { 0 },
             ..Default::default()
         };
         match api::add_macro_action(id, &a) {
@@ -691,6 +701,8 @@ impl RgbcueApp {
                         hold: a.action_hold,
                         repeat: a.action_repeat,
                         repeat_delay: a.action_repeat_delay,
+                        text_delay: a.text_delay_ms,
+                        text_jitter: a.text_delay_jitter_ms,
                     },
                 );
             }
@@ -709,13 +721,7 @@ impl RgbcueApp {
             if ui.button("Save repeat").clicked() {
                 let r = if self.repeat_loop { -1 } else { self.repeat_count };
                 self.macro_result = Some(
-                    api::update_macro_settings(
-                        id,
-                        r,
-                        self.repeat_delay,
-                        m.text_delay_ms,
-                        m.text_delay_variance_ms,
-                    )
+                    api::update_macro_settings(id, r, self.repeat_delay)
                         .map(|_| "Repeat saved".to_string()),
                 );
                 self.macro_dirty = true;
@@ -800,7 +806,12 @@ impl RgbcueApp {
         if let Some(aidx) = self.selected_action {
             ui.separator();
             ui.label(egui::RichText::new(format!("Action {aidx}")).strong());
-            let (hold, rep, rdelay) = {
+            let action_is_text = m
+                .actions
+                .get(&aidx.to_string())
+                .map(|a| a.action_type == api::ACTION_TEXT)
+                .unwrap_or(false);
+            let (hold, rep, rdelay, tdelay, tjitter) = {
                 let e = self.action_edits.entry(aidx).or_default();
                 ui.checkbox(&mut e.hold, "Hold (press-and-hold)");
                 ui.horizontal(|ui| {
@@ -816,12 +827,28 @@ impl RgbcueApp {
                             .range(0..=60000),
                     );
                 });
-                (e.hold, e.repeat, e.repeat_delay)
+                if action_is_text {
+                    ui.horizontal(|ui| {
+                        ui.label("Typing delay");
+                        ui.add(
+                            egui::DragValue::new(&mut e.text_delay)
+                                .range(10..=1000)
+                                .suffix(" ms"),
+                        );
+                        ui.label("Jitter");
+                        ui.add(
+                            egui::DragValue::new(&mut e.text_jitter)
+                                .range(0..=500)
+                                .suffix(" ms"),
+                        );
+                    });
+                }
+                (e.hold, e.repeat, e.repeat_delay, e.text_delay, e.text_jitter)
             };
             ui.horizontal(|ui| {
                 if ui.button("Save action").clicked() {
                     self.macro_result = Some(
-                        api::update_macro_action(id, aidx, hold, rep, rdelay)
+                        api::update_macro_action(id, aidx, hold, rep, rdelay, tdelay, tjitter)
                             .map(|_| "Action saved".to_string()),
                     );
                     self.macro_dirty = true;
@@ -877,6 +904,20 @@ impl RgbcueApp {
         );
         if self.new_action_type == api::ACTION_TEXT {
             ui.checkbox(&mut self.new_action_enter, "send Enter after text");
+            ui.horizontal(|ui| {
+                ui.label("Typing delay");
+                ui.add(
+                    egui::DragValue::new(&mut self.new_action_text_delay)
+                        .range(10..=1000)
+                        .suffix(" ms"),
+                );
+                ui.label("Jitter");
+                ui.add(
+                    egui::DragValue::new(&mut self.new_action_text_jitter)
+                        .range(0..=500)
+                        .suffix(" ms"),
+                );
+            });
         }
         if self.capture_armed {
             ui.label(
@@ -899,7 +940,9 @@ impl RgbcueApp {
                 let y = self.new_action_y;
                 let abs = self.new_action_abs;
                 let enter = self.new_action_enter;
-                self.add_action(id, ty, cmd, dly, &text, x, y, abs, enter);
+                let text_delay = self.new_action_text_delay;
+                let text_jitter = self.new_action_text_jitter;
+                self.add_action(id, ty, cmd, dly, &text, x, y, abs, enter, text_delay, text_jitter);
             }
         });
     }

@@ -2196,6 +2196,10 @@ pub struct MacroAction {
     pub mouse_position_y: i32,
     #[serde(rename = "mousePositionAbsolute", default)]
     pub mouse_position_absolute: bool,
+    #[serde(rename = "textDelayMs", default)]
+    pub text_delay_ms: i32,
+    #[serde(rename = "textDelayJitterMs", default)]
+    pub text_delay_jitter_ms: i32,
 }
 
 /// A named macro with its settings and steps.
@@ -2209,10 +2213,6 @@ pub struct Macro {
     pub repeat: i32,
     #[serde(rename = "repeatDelay", default)]
     pub repeat_delay: i32,
-    #[serde(rename = "textDelayMs", default)]
-    pub text_delay_ms: i32,
-    #[serde(rename = "textDelayVarianceMs", default)]
-    pub text_delay_variance_ms: i32,
     #[serde(default)]
     pub actions: std::collections::HashMap<String, MacroAction>,
     #[serde(default)]
@@ -2311,24 +2311,11 @@ pub fn delete_macro(id: i32) -> Result<(), String> {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn update_macro_settings(
-    id: i32,
-    repeat: i32,
-    repeat_delay: i32,
-    text_delay: i32,
-    text_variance: i32,
-) -> Result<(), String> {
+pub fn update_macro_settings(id: i32, repeat: i32, repeat_delay: i32) -> Result<(), String> {
     send_json(
         "POST",
         &format!("{BASE}/api/macro/updateSettings"),
-        &serde_json::json!({
-            "macroId": id,
-            "macroRepeat": repeat,
-            "macroRepeatDelay": repeat_delay,
-            "macroTextDelay": text_delay,
-            "macroTextDelayVariance": text_variance,
-        }),
+        &serde_json::json!({ "macroId": id, "macroRepeat": repeat, "macroRepeatDelay": repeat_delay }),
     )
 }
 
@@ -2345,17 +2332,22 @@ pub fn add_macro_action(id: i32, a: &MacroAction) -> Result<(), String> {
             "mousePositionX": a.mouse_position_x,
             "mousePositionY": a.mouse_position_y,
             "mousePositionAbsolute": a.mouse_position_absolute,
+            "textDelayMs": a.text_delay_ms,
+            "textDelayJitterMs": a.text_delay_jitter_ms,
         }),
     )
 }
 
 #[allow(dead_code)] // wired to the per-action hold/repeat editor next
+#[allow(clippy::too_many_arguments)]
 pub fn update_macro_action(
     id: i32,
     index: i32,
     hold: bool,
     repeat: u8,
     repeat_delay: u16,
+    text_delay: i32,
+    text_jitter: i32,
 ) -> Result<(), String> {
     send_json(
         "POST",
@@ -2366,6 +2358,8 @@ pub fn update_macro_action(
             "pressAndHold": hold,
             "actionRepeatValue": repeat,
             "actionRepeatDelay": repeat_delay,
+            "textDelayMs": text_delay,
+            "textDelayJitterMs": text_jitter,
         }),
     )
 }
@@ -2390,6 +2384,8 @@ pub fn reorder_macro_actions(
             a.action_hold,
             a.action_repeat,
             a.action_repeat_delay,
+            a.text_delay_ms,
+            a.text_delay_jitter_ms,
         )?;
     }
     Ok(())
