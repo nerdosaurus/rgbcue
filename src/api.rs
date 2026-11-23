@@ -1330,6 +1330,12 @@ impl Color {
         ]
     }
 
+    pub fn set_rgb(&mut self, rgb: [u8; 3]) {
+        self.red = f64::from(rgb[0]);
+        self.green = f64::from(rgb[1]);
+        self.blue = f64::from(rgb[2]);
+    }
+
     pub fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self {
             red: f64::from(r),
@@ -1364,10 +1370,13 @@ pub struct RgbProfile {
     pub min_temp: f64,
     #[serde(rename = "maxTemp", default)]
     pub max_temp: f64,
-    /// Present on gradient effects; preserved when the other parameters are saved.
+    /// Present on gradient effects; stop keys are numeric strings.
     #[serde(default)]
-    pub gradients: Option<serde_json::Value>,
+    pub gradients: Option<Gradients>,
 }
+
+/// Gradient stops keyed by their numeric index, as OpenLinkHub stores them.
+pub type Gradients = std::collections::HashMap<String, Color>;
 
 /// The lighting payload returned by `GET /api/color/{serial}`.
 #[derive(Debug, Clone, Deserialize)]
@@ -1439,7 +1448,7 @@ pub fn update_rgb_profile(
     alternate: bool,
     min_temp: f64,
     max_temp: f64,
-    gradients: Option<&serde_json::Value>,
+    gradients: Option<&Gradients>,
 ) -> Result<(), String> {
     let mut payload = serde_json::json!({
         "deviceId": serial,
@@ -1453,8 +1462,10 @@ pub fn update_rgb_profile(
         "rgbMinTemp": min_temp.clamp(0.0, 100.0),
         "rgbMaxTemp": max_temp.clamp(0.0, 100.0),
     });
-    if let Some(gradients) = gradients {
-        payload["colorZones"] = gradients.clone();
+    if let Some(gradients) = gradients
+        && let Ok(value) = serde_json::to_value(gradients)
+    {
+        payload["colorZones"] = value;
     }
     send_json("PUT", &format!("{BASE}/api/color/change"), &payload)
 }
@@ -2568,7 +2579,9 @@ mod tests {
         assert_eq!(profile.middle.to_rgb(), [0, 128, 0]);
         assert_eq!(profile.direction, 4);
         assert!(profile.alternate);
-        assert!(profile.gradients.is_some());
+        let gradients = profile.gradients.as_ref().expect("gradient stops");
+        assert_eq!(gradients.len(), 1);
+        assert_eq!(gradients["0"].blue, 3.0);
     }
 
 

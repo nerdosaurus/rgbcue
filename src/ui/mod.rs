@@ -149,6 +149,7 @@ struct LightingEdit {
     speed: f64,
     direction: u8,
     alternate: bool,
+    gradient_stops: Vec<api::Color>,
 }
 
 #[derive(Clone)]
@@ -303,7 +304,7 @@ enum DeviceAction {
         alternate: bool,
         min_temp: f64,
         max_temp: f64,
-        gradients: Option<serde_json::Value>,
+        gradients: Option<api::Gradients>,
     },
     Layout(String),
     Polling(i64),
@@ -4395,19 +4396,23 @@ fn keyboard_editor(ui: &mut Ui, d: &mut Device, color: &mut [u8; 3]) -> Option<D
 /// Load the device's lighting profiles once and keep the edit buffers in sync
 /// with the selected effect.
 fn sync_lighting(d: &mut Device) {
-    if !d.lighting.attempted {
-        d.lighting.attempted = true;
-        if let Ok(data) = api::fetch_rgb_profiles(&d.serial) {
-            d.lighting.profiles = data.profiles;
-            d.lighting.loaded = true;
-        }
-    }
-    if !d.lighting.loaded {
-        return;
-    }
     let mode = d.rgb_modes.get(d.effect).cloned().unwrap_or_default();
     if d.lighting.synced == mode {
         return;
+    }
+    // Re-fetch on every effect change so a saved profile is shown fresh when
+    // the user switches away and back.
+    match api::fetch_rgb_profiles(&d.serial) {
+        Ok(data) => {
+            d.lighting.profiles = data.profiles;
+            d.lighting.loaded = true;
+            d.lighting.attempted = true;
+        }
+        Err(_) => {
+            d.lighting.attempted = true;
+            d.lighting.synced = mode;
+            return;
+        }
     }
     if let Some(profile) = d.lighting.profiles.get(&mode) {
         d.lighting.start = profile.start.to_rgb();
@@ -4420,6 +4425,15 @@ fn sync_lighting(d: &mut Device) {
         };
         d.lighting.direction = profile.direction;
         d.lighting.alternate = profile.alternate;
+        d.lighting.gradient_stops = profile
+            .gradients
+            .as_ref()
+            .map(|gradients| {
+                let mut stops: Vec<api::Color> = gradients.values().cloned().collect();
+                stops.sort_by(|a, b| a.position.total_cmp(&b.position));
+                stops
+            })
+            .unwrap_or_default();
     }
     d.lighting.synced = mode;
 }
@@ -4438,15 +4452,64 @@ fn supports_alternate(mode: &str) -> bool {
     )
 }
 
+fn stop_color(stop: &api::Color) -> Color32 {
+    let brightness = stop.brightness.clamp(0.0, 1.0);
+    let scale = |value: f64| (value * brightness).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(scale(stop.red), scale(stop.green), scale(stop.blue))
+}
+
+fn gradient_color_at(stops: &[api::Color], t: f64) -> Color32 {
+    let mut ordered: Vec<&api::Color> = stops.iter().collect();
+    ordered.sort_by(|a, b| a.position.total_cmp(&b.position));
+    let Some(first) = ordered.first() else {
+        return Color32::BLACK;
+    };
+    if t <= first.position {
+        return stop_color(first);
+    }
+    for pair in ordered.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if t <= b.position {
+            let span = (b.position - a.position).max(0.0001);
+            let f = ((t - a.position) / span).clamp(0.0, 1.0) as f32;
+            let (ca, cb) = (stop_color(a), stop_color(b));
+            let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f).round() as u8;
+            return Color32::from_rgb(lerp(ca.r(), cb.r()), lerp(ca.g(), cb.g()), lerp(ca.b(), cb.b()));
+        }
+    }
+    stop_color(ordered.last().copied().unwrap())
+}
+
+fn gradient_preview(ui: &mut Ui, stops: &[api::Color]) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
+    let segments = 96;
+    for i in 0..segments {
+        let t0 = i as f64 / segments as f64;
+        let t1 = (i + 1) as f64 / segments as f64;
+        let color = gradient_color_at(stops, (t0 + t1) / 2.0);
+        let x0 = rect.left() + rect.width() * t0 as f32;
+        let x1 = rect.left() + rect.width() * t1 as f32;
+        ui.painter().rect_filled(
+            Rect::from_min_max(
+                egui::pos2(x0, rect.top()),
+                egui::pos2(x1, rect.bottom()),
+            ),
+            0.0,
+            color,
+        );
+    }
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, t::BORDER),
+        StrokeKind::Inside,
+    );
+}
+
 fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
     let mode = d.rgb_modes.get(d.effect).cloned().unwrap_or_default();
     let profile = d.lighting.profiles.get(&mode).cloned()?;
-    let has_gradients = profile
-        .gradients
-        .as_ref()
-        .and_then(|g| g.as_object())
-        .map(|g| !g.is_empty())
-        .unwrap_or(false);
+    let has_gradients = profile.gradients.is_some();
     let temperature = matches!(
         mode.as_str(),
         "cpu-temperature" | "gpu-temperature" | "liquid-temperature" | "probe-temperature"
@@ -4472,14 +4535,66 @@ fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
         ui.add_space(8.0);
 
         if has_gradients {
-            ui.label(
-                RichText::new(
-                    "This effect uses a colour gradient. Its stops are preserved when the other settings are saved.",
-                )
-                .size(10.5)
-                .italics()
-                .color(t::DIM),
-            );
+            if !d.lighting.gradient_stops.is_empty() {
+                gradient_preview(ui, &d.lighting.gradient_stops);
+                ui.add_space(8.0);
+            } else {
+                ui.label(
+                    RichText::new("No gradient stops yet.")
+                        .size(10.5)
+                        .italics()
+                        .color(t::DIM),
+                );
+            }
+            let count = d.lighting.gradient_stops.len();
+            let mut remove: Option<usize> = None;
+            for (i, stop) in d.lighting.gradient_stops.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    let mut rgb = stop.to_rgb();
+                    if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                        stop.set_rgb(rgb);
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Position").size(10.5).color(t::MUTED));
+                    ui.add(
+                        egui::DragValue::new(&mut stop.position)
+                            .range(0.0..=1.0)
+                            .speed(0.01),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Brightness").size(10.5).color(t::MUTED));
+                    let mut percent = stop.brightness * 100.0;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut percent)
+                                .range(0.0..=100.0)
+                                .suffix("%"),
+                        )
+                        .changed()
+                    {
+                        stop.brightness = (percent / 100.0).clamp(0.0, 1.0);
+                    }
+                    if count > 2 && t::button(ui, "Remove", t::Btn::Danger) {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                d.lighting.gradient_stops.remove(i);
+            }
+            if t::button(ui, "Add stop", t::Btn::Normal) {
+                let mut stop = api::Color::rgb(255, 255, 255);
+                stop.position = 0.5;
+                stop.brightness = 1.0;
+                d.lighting.gradient_stops.push(stop);
+            }
+            if d.lighting.gradient_stops.len() < 2 {
+                ui.label(
+                    RichText::new("A gradient needs at least two stops.")
+                        .size(10.5)
+                        .color(t::BAD),
+                );
+            }
         } else {
             t::settings_row(ui, "Start colour", |ui| {
                 egui::color_picker::color_edit_button_srgb(ui, &mut d.lighting.start);
@@ -4530,7 +4645,8 @@ fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
             });
         }
 
-        if t::button(ui, "Save effect", t::Btn::Normal) {
+        let can_save = !has_gradients || d.lighting.gradient_stops.len() >= 2;
+        if can_save && t::button(ui, "Save effect", t::Btn::Normal) {
             save = true;
         }
         ui.add_space(4.0);
@@ -4543,6 +4659,15 @@ fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
     });
 
     if save {
+        let gradients = has_gradients.then(|| {
+            let mut ordered = d.lighting.gradient_stops.clone();
+            ordered.sort_by(|a, b| a.position.total_cmp(&b.position));
+            let mut map = api::Gradients::new();
+            for (i, stop) in ordered.into_iter().enumerate() {
+                map.insert(i.to_string(), stop);
+            }
+            map
+        });
         Some(DeviceAction::RgbParams {
             profile: mode,
             start: d.lighting.start,
@@ -4553,7 +4678,7 @@ fn effect_settings_card(ui: &mut Ui, d: &mut Device) -> Option<DeviceAction> {
             alternate: d.lighting.alternate,
             min_temp: profile.min_temp,
             max_temp: profile.max_temp,
-            gradients: profile.gradients.clone(),
+            gradients,
         })
     } else {
         None

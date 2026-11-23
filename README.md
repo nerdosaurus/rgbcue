@@ -64,9 +64,10 @@ for applying a colour to the current key, row or whole keyboard
 basic key-assignment editor (`/api/keyboard/updateKeyAssignment`). All selects
 are real dropdowns. The device page's **Effect settings** card edits the selected
 profile's start/end colours, speed, direction and alternate colours, and
-re-applies it. Colour swatches in the preview card remain cosmetic; gradient
-effects keep their stops read-only for now. Key-assignment modifiers, toggle
-delay and retain-original are included; layers are not wired yet.
+re-applies it. Gradient effects get a stop editor (colour, position,
+brightness, add/remove) with a live preview. Colour swatches in the preview card
+remain cosmetic. Key-assignment modifiers, toggle delay and retain-original are
+included; layers are not wired yet.
 
 Devices can be added to or removed from the dashboard from the dashboard's add
 tile or the device page. Dashboard cards can be reordered by dragging their grip
