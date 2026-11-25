@@ -10,8 +10,22 @@ prefix="${PREFIX:-$HOME/.local}"
 bindir="$prefix/bin"
 appdir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 
+build=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-build) build=0 ;;
+        *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
 cd "$root"
-cargo build --release --locked
+if (( build )); then
+    cargo build --release --locked
+fi
+if [[ ! -x target/release/rgbcue ]]; then
+    printf 'No release binary at %s; run without --no-build first.\n' "$root/target/release/rgbcue" >&2
+    exit 1
+fi
 install -Dm755 target/release/rgbcue "$bindir/rgbcue"
 
 mkdir -p "$appdir"

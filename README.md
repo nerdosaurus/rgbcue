@@ -40,8 +40,9 @@ Keep the checkout somewhere persistent (not `/tmp`), then:
 
 This builds a release binary, installs it as `~/.local/bin/rgbcue`, and writes a
 desktop entry to `~/.local/share/applications/rgbcue.desktop`. Use
-`PREFIX=/usr/local ./scripts/install.sh` for a system-wide install. OpenLinkHub
-still has to be installed and running separately.
+`PREFIX=/usr/local ./scripts/install.sh` for a system-wide install. If a release
+binary already exists, `./scripts/install.sh --no-build` skips the rebuild.
+OpenLinkHub still has to be installed and running separately.
 
 ## CLI flags
 
