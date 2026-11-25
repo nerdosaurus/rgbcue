@@ -30,6 +30,19 @@ cargo run --release
 
 The window is built with `eframe`/`egui` 0.37.
 
+## Install
+
+Keep the checkout somewhere persistent (not `/tmp`), then:
+
+```
+./scripts/install.sh
+```
+
+This builds a release binary, installs it as `~/.local/bin/rgbcue`, and writes a
+desktop entry to `~/.local/share/applications/rgbcue.desktop`. Use
+`PREFIX=/usr/local ./scripts/install.sh` for a system-wide install. OpenLinkHub
+still has to be installed and running separately.
+
 ## CLI flags
 
 | Flag | What it does |
